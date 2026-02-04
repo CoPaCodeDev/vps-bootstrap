@@ -146,7 +146,7 @@ get_status_for_host() {
     # Hole Status-Informationen parallel
     local updates reboot load
 
-    updates=$(ssh_exec "$ip" "apt list --upgradable 2>/dev/null | grep -c upgradable || echo 0" 2>/dev/null || echo "?")
+    updates=$(ssh_exec "$ip" "apt list --upgradable 2>/dev/null | grep -c upgradable; true" 2>/dev/null || echo "?")
     reboot=$(ssh_exec "$ip" "[ -f /var/run/reboot-required ] && echo 'ja' || echo 'nein'" 2>/dev/null || echo "?")
     load=$(ssh_exec "$ip" "uptime | awk -F'load average:' '{print \$2}' | awk -F, '{print \$1}' | tr -d ' '" 2>/dev/null || echo "?")
 
