@@ -10,6 +10,9 @@
 CLOUDVLAN_IP="10.10.0.X"  # <-- Hier die IP eintragen (z.B. 10.10.0.1, 10.10.0.2, etc.)
 HOSTNAME="mein-vps"       # <-- Hier den Hostnamen eintragen (z.B. vps1, webserver, etc.)
 
+# Proxy Public Key (ermöglicht SSH-Zugriff vom Proxy)
+PROXY_PUBKEY="ssh-ed25519 XXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXX proxy@cloudvlan"
+
 ###############################################################################
 # Ab hier nichts mehr ändern
 ###############################################################################
@@ -62,3 +65,10 @@ ufw allow from 10.10.0.0/24
 
 # UFW aktivieren
 ufw --force enable
+
+# Proxy SSH-Key installieren (ermöglicht Zugriff vom Proxy)
+mkdir -p /home/master/.ssh
+echo "$PROXY_PUBKEY" >> /home/master/.ssh/authorized_keys
+chown -R master:master /home/master/.ssh
+chmod 700 /home/master/.ssh
+chmod 600 /home/master/.ssh/authorized_keys
