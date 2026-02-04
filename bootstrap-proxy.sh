@@ -15,10 +15,14 @@ HOSTNAME="proxy"
 # Ab hier nichts mehr ändern
 ###############################################################################
 
+echo "=== Proxy Bootstrap ==="
+echo ""
+
 # User master als Admin konfigurieren
 usermod -aG sudo master
 echo "master ALL=(ALL) NOPASSWD:ALL" > /etc/sudoers.d/master
 chmod 440 /etc/sudoers.d/master
+echo "[1/5] User master konfiguriert"
 
 # Hostname setzen
 hostnamectl set-hostname "$HOSTNAME"
@@ -26,6 +30,7 @@ echo "$HOSTNAME" > /etc/hostname
 sed -i "/127.0.1.1/d" /etc/hosts
 echo "127.0.1.1    $HOSTNAME" >> /etc/hosts
 echo "${CLOUDVLAN_IP}    ${HOSTNAME}-vlan" >> /etc/hosts
+echo "[2/5] Hostname gesetzt: $HOSTNAME"
 
 # CloudVLAN Interface finden
 CLOUDVLAN_INTERFACE=""
@@ -44,10 +49,12 @@ iface ${CLOUDVLAN_INTERFACE} inet static
 EOF
 
 ifup "$CLOUDVLAN_INTERFACE" 2>/dev/null
+echo "[3/5] CloudVLAN konfiguriert: $CLOUDVLAN_INTERFACE -> $CLOUDVLAN_IP"
 
 # UFW Firewall installieren und konfigurieren
 apt-get update -qq
 apt-get install -y -qq ufw
+echo "[4/5] Firewall wird konfiguriert..."
 
 # Defaults: Ausgehend erlauben, Eingehend blockieren
 ufw default deny incoming
@@ -67,3 +74,10 @@ ufw allow from 10.10.0.0/24
 
 # UFW aktivieren
 ufw --force enable
+echo "[5/5] Firewall aktiviert"
+echo ""
+echo "=== Fertig ==="
+echo "CloudVLAN IP: $CLOUDVLAN_IP"
+echo "Hostname: $HOSTNAME"
+echo ""
+echo "Nächster Schritt: setup-proxy-key.sh ausführen"
