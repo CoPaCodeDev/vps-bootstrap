@@ -22,10 +22,19 @@ PROXY_PUBKEY="ssh-ed25519 XXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXX
 [[ "$HOSTNAME" == "mein-vps" || -z "$HOSTNAME" ]] && exit 1
 [[ "$CLOUDVLAN_IP" =~ ^10\.10\.0\.([1-9]|[1-9][0-9]|1[0-9]{2}|2[0-4][0-9]|25[0-4])$ ]] || exit 1
 
+echo "=== VPS Bootstrap ==="
+echo ""
+
 # User master als Admin konfigurieren
 usermod -aG sudo master
 echo "master ALL=(ALL) NOPASSWD:ALL" > /etc/sudoers.d/master
 chmod 440 /etc/sudoers.d/master
+echo "[1/5] User master konfiguriert"
+
+# SSH Root-Login deaktivieren
+sed -i 's/^#*PermitRootLogin.*/PermitRootLogin no/' /etc/ssh/sshd_config
+systemctl restart sshd
+echo "[2/5] SSH Root-Login deaktiviert"
 
 # Hostname setzen
 hostnamectl set-hostname "$HOSTNAME"
@@ -33,6 +42,7 @@ echo "$HOSTNAME" > /etc/hostname
 sed -i "/127.0.1.1/d" /etc/hosts
 echo "127.0.1.1    $HOSTNAME" >> /etc/hosts
 echo "${CLOUDVLAN_IP}    ${HOSTNAME}-vlan" >> /etc/hosts
+echo "[3/5] Hostname gesetzt: $HOSTNAME"
 
 # CloudVLAN Interface finden
 CLOUDVLAN_INTERFACE=""
@@ -51,6 +61,7 @@ iface ${CLOUDVLAN_INTERFACE} inet static
 EOF
 
 ifup "$CLOUDVLAN_INTERFACE" 2>/dev/null
+echo "[4/5] CloudVLAN konfiguriert: $CLOUDVLAN_INTERFACE -> $CLOUDVLAN_IP"
 
 # UFW Firewall installieren und konfigurieren
 apt-get update -qq
@@ -65,6 +76,7 @@ ufw allow from 10.10.0.0/24
 
 # UFW aktivieren
 ufw --force enable
+echo "[5/5] Firewall aktiviert"
 
 # Proxy SSH-Key installieren (ermöglicht Zugriff vom Proxy)
 mkdir -p /home/master/.ssh
@@ -72,3 +84,10 @@ echo "$PROXY_PUBKEY" >> /home/master/.ssh/authorized_keys
 chown -R master:master /home/master/.ssh
 chmod 700 /home/master/.ssh
 chmod 600 /home/master/.ssh/authorized_keys
+
+echo ""
+echo "=== Fertig ==="
+echo "CloudVLAN IP: $CLOUDVLAN_IP"
+echo "Hostname: $HOSTNAME"
+echo ""
+echo "Der VPS ist jetzt nur noch über den Proxy erreichbar."
