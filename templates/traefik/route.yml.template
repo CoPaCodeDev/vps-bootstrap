@@ -1,0 +1,15 @@
+http:
+  routers:
+    {{NAME}}:
+      rule: "Host(`{{DOMAIN}}`)"
+      entryPoints:
+        - websecure
+      service: {{NAME}}
+      tls:
+        certResolver: letsencrypt
+
+  services:
+    {{NAME}}:
+      loadBalancer:
+        servers:
+          - url: "http://{{HOST_IP}}:{{PORT}}"

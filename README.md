@@ -30,13 +30,29 @@ Im Netcup SCP unter "Medien" → "VNC-Konsole" → "Befehl ausführen":
 ### 5. VPS-CLI einrichten (auf dem Proxy)
 ```bash
 # Lokal: Dateien auf Proxy kopieren
-scp vps-cli.sh setup-proxy-key.sh master@<proxy-ip>:~
+scp -r vps-cli.sh templates setup-proxy-key.sh master@<proxy-ip>:~
 
 # Auf dem Proxy:
 ssh master@<proxy-ip>
-sudo mv vps-cli.sh /usr/local/bin/vps
-sudo chmod +x /usr/local/bin/vps
+sudo mkdir -p /opt/vps
+sudo mv ~/vps-cli.sh /opt/vps/
+sudo mv ~/templates /opt/vps/
+sudo chmod +x /opt/vps/vps-cli.sh
+sudo ln -sf /opt/vps/vps-cli.sh /usr/local/bin/vps
 vps scan  # Netzwerk nach VPS scannen
+```
+
+### Verzeichnisstruktur VPS-CLI
+```
+/opt/vps/
+├── vps-cli.sh              # CLI-Skript
+└── templates/
+    └── traefik/            # Traefik-Templates
+        ├── docker-compose.yml
+        ├── traefik.yml
+        └── route.yml.template
+
+/usr/local/bin/vps → /opt/vps/vps-cli.sh (Symlink)
 ```
 
 ## VPS Management CLI
@@ -54,6 +70,9 @@ Nach dem Bootstrap kann das CLI-Tool vom Proxy aus alle VPS verwalten.
 | `vps reboot <host>` | Startet VPS neu (mit Bestätigung) |
 | `vps exec <host> <cmd>` | Führt Befehl auf VPS aus |
 | `vps ssh <host>` | Öffnet interaktive SSH-Session |
+| `vps docker <host>` | Installiert Docker auf einem Host |
+| `vps traefik <cmd>` | Traefik-Verwaltung (siehe unten) |
+| `vps route <cmd>` | Route-Verwaltung (siehe unten) |
 
 ### Beispiele
 
@@ -70,18 +89,87 @@ vps ssh webserver           # SSH-Verbindung öffnen
 
 ## Scripts
 
-| Script | Verwendung |
-|--------|------------|
-| `bootstrap-proxy.sh` | Für den Proxy-Server (öffentlich erreichbar, 10.10.0.1) |
-| `bootstrap-vps.sh` | Für alle anderen VPS (nur intern erreichbar) |
-| `setup-proxy-key.sh` | Generiert SSH-Key auf dem Proxy |
-| `vps-cli.sh` | Management-CLI für den Proxy |
+| Script | Verwendung | Ziel auf Proxy |
+|--------|------------|----------------|
+| `bootstrap-proxy.sh` | Für den Proxy-Server (öffentlich erreichbar, 10.10.0.1) | - |
+| `bootstrap-vps.sh` | Für alle anderen VPS (nur intern erreichbar) | - |
+| `setup-proxy-key.sh` | Generiert SSH-Key auf dem Proxy | - |
+| `vps-cli.sh` | Management-CLI | `/opt/vps/vps-cli.sh` |
+| `templates/` | Konfigurations-Templates | `/opt/vps/templates/` |
+
+## Traefik Reverse Proxy
+
+Traefik ermöglicht den Zugriff auf interne Services über HTTPS mit automatischen Let's Encrypt Zertifikaten.
+
+### Setup
+
+```bash
+# 1. Docker auf Proxy installieren
+vps docker proxy
+
+# 2. Traefik einrichten (E-Mail für Let's Encrypt angeben)
+vps traefik setup admin@example.com
+
+# 3. DNS beim Provider konfigurieren
+# subdomain.example.com → Public-IP des Proxy
+
+# 4. Route hinzufügen
+vps route add subdomain.example.com webserver 8080
+```
+
+### Route-Befehle
+
+| Befehl | Beschreibung |
+|--------|--------------|
+| `vps route add <domain> <host> <port>` | Neue Route erstellen |
+| `vps route list` | Alle Routes anzeigen |
+| `vps route remove <domain>` | Route entfernen |
+
+### Traefik-Befehle
+
+| Befehl | Beschreibung |
+|--------|--------------|
+| `vps traefik setup <email>` | Traefik einrichten |
+| `vps traefik status` | Container-Status anzeigen |
+| `vps traefik logs [lines]` | Logs anzeigen |
+| `vps traefik restart` | Traefik neu starten |
+
+### Architektur
+
+```
+Internet → Proxy (10.10.0.1) → CloudVLAN → VPS-Services
+              │
+         [Traefik]
+         Port 80/443
+         Let's Encrypt
+         File-Provider
+```
+
+### Verzeichnisstruktur auf dem Proxy
+
+```
+/opt/traefik/
+├── docker-compose.yml      # Traefik Container
+├── traefik.yml             # Statische Config
+├── acme.json               # SSL-Zertifikate
+└── conf.d/                 # Dynamische Routes
+    └── subdomain.example.com.yml
+```
 
 ## Netzwerk
 
 - **Proxy:** 10.10.0.1 (öffentlich erreichbar)
 - **VPS:** 10.10.0.2-254 (nur über CloudVLAN)
 - **User:** `master` (sudo ohne Passwort)
+
+## Konfigurationspfade
+
+| Pfad | Beschreibung |
+|------|--------------|
+| `/opt/vps/` | VPS-CLI Installation |
+| `/opt/traefik/` | Traefik-Konfiguration |
+| `/etc/vps-hosts` | Liste der VPS |
+| `/usr/local/bin/vps` | Symlink zum CLI |
 
 ## Ergebnis
 - User `master` hat sudo-Rechte auf allen Systemen
