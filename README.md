@@ -5,10 +5,9 @@ Bootstrap-Scripts und Management-CLI für Netcup VPS mit CloudVLAN (Debian 13).
 ## Workflow
 
 ### 1. Proxy aufsetzen
-```bash
-# Bei Netcup im VPS-Panel ausführen:
-curl -sL https://raw.githubusercontent.com/CoPaCodeDev/vps-bootstrap/main/bootstrap-proxy.sh | bash
-```
+Im Netcup SCP (Server Control Panel) unter "Medien" → "VNC-Konsole" → "Befehl ausführen":
+- Inhalt von `bootstrap-proxy.sh` ins Textfeld einfügen
+- Ausführen
 
 ### 2. SSH-Key generieren
 ```bash
@@ -20,19 +19,22 @@ sudo bash setup-proxy-key.sh
 ```
 
 ### 3. Key in bootstrap-vps.sh eintragen
-Den angezeigten Public Key in `bootstrap-vps.sh` bei `PROXY_PUBKEY` eintragen, dann committen und pushen.
+Den angezeigten Public Key in `bootstrap-vps.sh` bei `PROXY_PUBKEY` eintragen.
 
 ### 4. Weitere VPS aufsetzen
-```bash
-# Bei Netcup im VPS-Panel:
-curl -sL https://raw.githubusercontent.com/CoPaCodeDev/vps-bootstrap/main/bootstrap-vps.sh -o bootstrap.sh
-nano bootstrap.sh  # CLOUDVLAN_IP und HOSTNAME setzen
-bash bootstrap.sh
-```
+Im Netcup SCP unter "Medien" → "VNC-Konsole" → "Befehl ausführen":
+- Inhalt von `bootstrap-vps.sh` ins Textfeld einfügen
+- **Vorher anpassen:** `CLOUDVLAN_IP` und `HOSTNAME` im Script setzen
+- Ausführen
 
 ### 5. VPS-CLI einrichten (auf dem Proxy)
 ```bash
-sudo cp vps-cli.sh /usr/local/bin/vps
+# Lokal: Dateien auf Proxy kopieren
+scp vps-cli.sh setup-proxy-key.sh master@<proxy-ip>:~
+
+# Auf dem Proxy:
+ssh master@<proxy-ip>
+sudo mv vps-cli.sh /usr/local/bin/vps
 sudo chmod +x /usr/local/bin/vps
 vps scan  # Netzwerk nach VPS scannen
 ```
