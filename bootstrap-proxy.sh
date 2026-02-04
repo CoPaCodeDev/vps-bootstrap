@@ -22,12 +22,12 @@ echo ""
 usermod -aG sudo master
 echo "master ALL=(ALL) NOPASSWD:ALL" > /etc/sudoers.d/master
 chmod 440 /etc/sudoers.d/master
-echo "[1/7] User master konfiguriert"
+echo "[1/10] User master konfiguriert"
 
 # SSH Root-Login deaktivieren
 sed -i 's/^#*PermitRootLogin.*/PermitRootLogin no/' /etc/ssh/sshd_config
 systemctl restart sshd
-echo "[2/7] SSH Root-Login deaktiviert"
+echo "[2/10] SSH Root-Login deaktiviert"
 
 # Hostname setzen
 hostnamectl set-hostname "$HOSTNAME"
@@ -35,7 +35,7 @@ echo "$HOSTNAME" > /etc/hostname
 sed -i "/127.0.1.1/d" /etc/hosts
 echo "127.0.1.1    $HOSTNAME" >> /etc/hosts
 echo "${CLOUDVLAN_IP}    ${HOSTNAME}-vlan" >> /etc/hosts
-echo "[3/7] Hostname gesetzt: $HOSTNAME"
+echo "[3/10] Hostname gesetzt: $HOSTNAME"
 
 # CloudVLAN Interface finden
 CLOUDVLAN_INTERFACE=""
@@ -54,18 +54,18 @@ iface ${CLOUDVLAN_INTERFACE} inet static
 EOF
 
 ifup "$CLOUDVLAN_INTERFACE" 2>/dev/null
-echo "[4/7] CloudVLAN konfiguriert: $CLOUDVLAN_INTERFACE -> $CLOUDVLAN_IP"
+echo "[4/10] CloudVLAN konfiguriert: $CLOUDVLAN_INTERFACE -> $CLOUDVLAN_IP"
 
 # UFW Firewall installieren und konfigurieren
 apt-get update -qq
 apt-get install -y -qq ufw
-echo "[5/7] Firewall wird konfiguriert..."
+echo "[5/10] Firewall wird konfiguriert..."
 
 # fail2ban installieren (SSH Brute-Force Schutz)
 apt-get install -y -qq fail2ban
 systemctl enable fail2ban
 systemctl start fail2ban
-echo "[6/7] fail2ban installiert"
+echo "[6/10] fail2ban installiert"
 
 # Defaults: Ausgehend erlauben, Eingehend blockieren
 ufw default deny incoming
@@ -85,10 +85,70 @@ ufw allow from 10.10.0.0/24
 
 # UFW aktivieren
 ufw --force enable
-echo "[7/7] Firewall aktiviert"
+echo "[7/10] Firewall aktiviert"
+
+# Git und GitHub CLI installieren
+apt-get install -y -qq git
+curl -fsSL https://cli.github.com/packages/githubcli-archive-keyring.gpg | dd of=/usr/share/keyrings/githubcli-archive-keyring.gpg 2>/dev/null
+echo "deb [arch=$(dpkg --print-architecture) signed-by=/usr/share/keyrings/githubcli-archive-keyring.gpg] https://cli.github.com/packages stable main" | tee /etc/apt/sources.list.d/github-cli.list > /dev/null
+apt-get update -qq
+apt-get install -y -qq gh
+echo "[8/10] GitHub CLI installiert"
+
+# GitHub Authentifizierung (Device-Code)
 echo ""
-echo "=== Fertig ==="
-echo "CloudVLAN IP: $CLOUDVLAN_IP"
-echo "Hostname: $HOSTNAME"
+echo "=== GitHub Authentifizierung ==="
+echo "Gleich wird ein Code angezeigt."
+echo "Öffne https://github.com/login/device auf deinem Handy/PC"
+echo "und gib den Code dort ein."
 echo ""
-echo "Nächster Schritt: setup-proxy-key.sh ausführen"
+read -p "Drücke ENTER um fortzufahren..."
+
+if gh auth login --git-protocol https --web; then
+    echo "[9/10] GitHub authentifiziert"
+
+    # Repository klonen
+    if gh repo clone CoPaCodeDev/vps-bootstrap /opt/vps; then
+        # VPS-CLI einrichten
+        chmod +x /opt/vps/vps-cli.sh
+        ln -sf /opt/vps/vps-cli.sh /usr/local/bin/vps
+        chown -R master:master /opt/vps
+        echo "[10/10] VPS-CLI eingerichtet"
+
+        echo ""
+        echo "=== Fertig ==="
+        echo "CloudVLAN IP: $CLOUDVLAN_IP"
+        echo "Hostname: $HOSTNAME"
+        echo ""
+        echo "Repository: /opt/vps"
+        echo "VPS-CLI: vps help"
+        echo ""
+        echo "Nächster Schritt: setup-proxy-key.sh ausführen"
+        echo "  sudo bash /opt/vps/setup-proxy-key.sh"
+    else
+        echo "[!] Repository konnte nicht geklont werden"
+        echo ""
+        echo "=== Teilweise fertig ==="
+        echo "CloudVLAN IP: $CLOUDVLAN_IP"
+        echo "Hostname: $HOSTNAME"
+        echo ""
+        echo "Manuelles Setup:"
+        echo "  gh repo clone CoPaCodeDev/vps-bootstrap /opt/vps"
+        echo "  sudo chmod +x /opt/vps/vps-cli.sh"
+        echo "  sudo ln -sf /opt/vps/vps-cli.sh /usr/local/bin/vps"
+        echo "  sudo chown -R master:master /opt/vps"
+    fi
+else
+    echo "[!] GitHub-Authentifizierung abgebrochen"
+    echo ""
+    echo "=== Teilweise fertig ==="
+    echo "CloudVLAN IP: $CLOUDVLAN_IP"
+    echo "Hostname: $HOSTNAME"
+    echo ""
+    echo "Manuelles Setup:"
+    echo "  gh auth login"
+    echo "  gh repo clone CoPaCodeDev/vps-bootstrap /opt/vps"
+    echo "  sudo chmod +x /opt/vps/vps-cli.sh"
+    echo "  sudo ln -sf /opt/vps/vps-cli.sh /usr/local/bin/vps"
+    echo "  sudo chown -R master:master /opt/vps"
+fi

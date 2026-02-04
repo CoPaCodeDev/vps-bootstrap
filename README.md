@@ -8,6 +8,8 @@ Bootstrap-Scripts und Management-CLI für Netcup VPS mit CloudVLAN (Debian 13).
 Im Netcup SCP (Server Control Panel) unter "Medien" → "VNC-Konsole" → "Befehl ausführen":
 - Inhalt von `bootstrap-proxy.sh` ins Textfeld einfügen
 - Ausführen
+- **GitHub Device-Code Auth:** Wenn der Code angezeigt wird, auf dem Handy/PC https://github.com/login/device öffnen und den Code eingeben
+- Das Repository wird automatisch geklont und die VPS-CLI eingerichtet
 
 ### 2. SSH-Key generieren
 ```bash
@@ -15,7 +17,7 @@ Im Netcup SCP (Server Control Panel) unter "Medien" → "VNC-Konsole" → "Befeh
 ssh master@<proxy-ip>
 
 # Key generieren:
-sudo bash setup-proxy-key.sh
+sudo bash /opt/vps/setup-proxy-key.sh
 ```
 
 ### 3. Key in bootstrap-vps.sh eintragen
@@ -27,19 +29,12 @@ Im Netcup SCP unter "Medien" → "VNC-Konsole" → "Befehl ausführen":
 - **Vorher anpassen:** `CLOUDVLAN_IP` und `HOSTNAME` im Script setzen
 - Ausführen
 
-### 5. VPS-CLI einrichten (auf dem Proxy)
+### 5. VPS-CLI nutzen
 ```bash
-# Lokal: Dateien auf Proxy kopieren
-scp -r vps-cli.sh templates setup-proxy-key.sh master@<proxy-ip>:~
-
 # Auf dem Proxy:
-ssh master@<proxy-ip>
-sudo mkdir -p /opt/vps
-sudo mv ~/vps-cli.sh /opt/vps/
-sudo mv ~/templates /opt/vps/
-sudo chmod +x /opt/vps/vps-cli.sh
-sudo ln -sf /opt/vps/vps-cli.sh /usr/local/bin/vps
 vps scan  # Netzwerk nach VPS scannen
+vps list  # Alle VPS anzeigen
+vps help  # Alle Befehle anzeigen
 ```
 
 ### Verzeichnisstruktur VPS-CLI
