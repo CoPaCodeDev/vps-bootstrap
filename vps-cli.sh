@@ -762,7 +762,7 @@ cmd_netcup_logout() {
 }
 
 # Listet alle Server auf
-cmd_netcup_servers() {
+cmd_netcup_list() {
     local search="$1"
     local endpoint="/api/v1/servers"
 
@@ -798,11 +798,11 @@ cmd_netcup_servers() {
 }
 
 # Zeigt Details zu einem Server
-cmd_netcup_server() {
+cmd_netcup_info() {
     local server_id="$1"
 
     if [[ -z "$server_id" ]]; then
-        print_error "Bitte Server-ID angeben: vps netcup server <id>"
+        print_error "Bitte Server-ID angeben: vps netcup info <id>"
         exit 1
     fi
 
@@ -867,15 +867,15 @@ cmd_netcup() {
         logout)
             cmd_netcup_logout "$@"
             ;;
-        servers)
-            cmd_netcup_servers "$@"
+        list|ls)
+            cmd_netcup_list "$@"
             ;;
-        server)
-            cmd_netcup_server "$@"
+        info)
+            cmd_netcup_info "$@"
             ;;
         *)
             print_error "Unbekannter Netcup-Befehl: $subcmd"
-            echo "Verwendung: vps netcup <login|logout|servers|server>"
+            echo "Verwendung: vps netcup <login|logout|list|info>"
             exit 1
             ;;
     esac
@@ -912,8 +912,8 @@ Routing:
 Netcup API:
   netcup login                      Login bei Netcup SCP API
   netcup logout                     Logout (Token löschen)
-  netcup servers [suche]            Zeigt alle Netcup Server
-  netcup server <id>                Zeigt Server-Details
+  netcup list [suche]               Zeigt alle Netcup Server
+  netcup info <id>                  Zeigt Server-Details
 
   help                              Zeigt diese Hilfe
 
@@ -926,8 +926,8 @@ Beispiele:
   vps route add app.de webserver 80 # Route hinzufügen
   vps route list                    # Routes anzeigen
   vps netcup login                  # Bei Netcup API einloggen
-  vps netcup servers                # Netcup Server auflisten
-  vps netcup server 12345           # Server-Details anzeigen
+  vps netcup list                   # Netcup Server auflisten
+  vps netcup info 12345             # Server-Details anzeigen
 
 Konfiguration:
   Hosts-Datei: /etc/vps-hosts
