@@ -882,12 +882,15 @@ cmd_netcup_list() {
 
 # Zeigt Details zu einem Server
 cmd_netcup_info() {
-    local server_id="$1"
+    local input="$1"
 
-    if [[ -z "$server_id" ]]; then
-        print_error "Bitte Server-ID angeben: vps netcup info <id>"
+    if [[ -z "$input" ]]; then
+        print_error "Bitte Server angeben: vps netcup info <id|hostname|name>"
         exit 1
     fi
+
+    local server_id
+    server_id=$(netcup_resolve_server_id "$input")
 
     local response
     response=$(netcup_api GET "/api/v1/servers/${server_id}")
@@ -938,6 +941,90 @@ cmd_netcup_info() {
     fi
 }
 
+# Löst Server-ID aus Hostname/Name auf
+netcup_resolve_server_id() {
+    local input="$1"
+
+    # Wenn es eine Zahl ist, direkt als ID verwenden
+    if [[ "$input" =~ ^[0-9]+$ ]]; then
+        echo "$input"
+        return
+    fi
+
+    # Per API nach Hostname/Name suchen
+    local response
+    response=$(netcup_api GET "/api/v1/servers?q=$(printf '%s' "$input" | jq -sRr @uri)")
+
+    local count
+    count=$(echo "$response" | jq 'length')
+
+    if [[ "$count" -eq 0 ]]; then
+        print_error "Kein Server gefunden für: $input"
+        exit 1
+    fi
+
+    # Exakten Match auf hostname oder name suchen
+    local exact_id
+    exact_id=$(echo "$response" | jq -r --arg q "$input" '
+        [.[] | select(.hostname == $q or .name == $q or .nickname == $q)] |
+        if length == 1 then .[0].id | tostring
+        elif length > 1 then "MULTIPLE"
+        else empty end')
+
+    if [[ "$exact_id" == "MULTIPLE" ]]; then
+        print_error "Mehrere Server gefunden für '$input'. Bitte ID verwenden:"
+        echo "$response" | jq -r --arg q "$input" '
+            .[] | select(.hostname == $q or .name == $q or .nickname == $q) |
+            "  " + (.id | tostring) + "  " + (.name // "-") + "  (" + (.hostname // "-") + ")"'
+        exit 1
+    fi
+
+    if [[ -n "$exact_id" ]]; then
+        echo "$exact_id"
+        return
+    fi
+
+    # Kein exakter Match - wenn nur ein Ergebnis, das nehmen
+    if [[ "$count" -eq 1 ]]; then
+        echo "$response" | jq -r '.[0].id | tostring'
+        return
+    fi
+
+    # Mehrere ungenaue Treffer
+    print_error "Mehrere Server gefunden für '$input'. Bitte genauer angeben:"
+    echo "$response" | jq -r '.[] | "  " + (.id | tostring) + "  " + (.name // "-") + "  (" + (.hostname // "-") + ")"'
+    exit 1
+}
+
+# Netcup Hilfe
+cmd_netcup_help() {
+    cat << 'EOF'
+Netcup Server Control Panel - API Befehle
+
+Verwendung: vps netcup <befehl> [optionen]
+
+Befehle:
+  login                 Login via Browser (Device Code Flow)
+  logout                Logout und Token widerrufen
+  list [suche]          Alle Server auflisten (optional mit Suchbegriff)
+  info <server>         Server-Details anzeigen
+  help                  Diese Hilfe anzeigen
+
+Server-Identifikation:
+  Bei 'info' kann der Server per ID, Hostname oder Name angegeben werden.
+  Beispiel: vps netcup info 12345
+            vps netcup info v2202501234567
+            vps netcup info mein-server
+
+Beispiele:
+  vps netcup login              # Login via Browser
+  vps netcup list               # Alle Server anzeigen
+  vps netcup list webserver     # Server mit 'webserver' suchen
+  vps netcup info 12345         # Server-Details per ID
+  vps netcup info v2202501234   # Server-Details per Hostname
+EOF
+}
+
 # Netcup Unterbefehl-Router
 cmd_netcup() {
     local subcmd="$1"
@@ -956,9 +1043,12 @@ cmd_netcup() {
         info)
             cmd_netcup_info "$@"
             ;;
+        help|--help|-h|"")
+            cmd_netcup_help
+            ;;
         *)
             print_error "Unbekannter Netcup-Befehl: $subcmd"
-            echo "Verwendung: vps netcup <login|logout|list|info>"
+            echo "Verwende 'vps netcup help' für eine Liste der Befehle."
             exit 1
             ;;
     esac
@@ -996,7 +1086,8 @@ Netcup API:
   netcup login                      Login via Browser (Device Code Flow)
   netcup logout                     Logout (Token widerrufen)
   netcup list [suche]               Zeigt alle Netcup Server
-  netcup info <id>                  Zeigt Server-Details
+  netcup info <server>              Zeigt Server-Details (ID, Hostname oder Name)
+  netcup help                       Zeigt Netcup-Hilfe mit allen Details
 
   help                              Zeigt diese Hilfe
 
@@ -1010,7 +1101,7 @@ Beispiele:
   vps route list                    # Routes anzeigen
   vps netcup login                  # Login via Browser
   vps netcup list                   # Netcup Server auflisten
-  vps netcup info 12345             # Server-Details anzeigen
+  vps netcup info v2202501234       # Server-Details (per Hostname)
 
 Konfiguration:
   Hosts-Datei: /etc/vps-hosts
