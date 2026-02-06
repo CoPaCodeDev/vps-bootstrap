@@ -759,7 +759,7 @@ cmd_netcup_login_device() {
 
     while [[ $attempt -lt $max_attempts ]]; do
         sleep "$interval"
-        ((attempt++))
+        ((++attempt))
 
         local response
         response=$(curl -s -X POST "$NETCUP_TOKEN_URL" \
