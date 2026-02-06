@@ -18,6 +18,14 @@ TRAEFIK_DIR="/opt/traefik"
 VPS_HOME="/opt/vps"
 TEMPLATES_DIR="${VPS_HOME}/templates"
 
+# Netcup SCP API Konfiguration
+NETCUP_CONFIG="${HOME}/.config/vps-cli/netcup"
+NETCUP_API_BASE="https://www.servercontrolpanel.de/scp-core"
+NETCUP_TOKEN_URL="https://www.servercontrolpanel.de/realms/scp/protocol/openid-connect/token"
+NETCUP_DEVICE_URL="https://www.servercontrolpanel.de/realms/scp/protocol/openid-connect/auth/device"
+NETCUP_REVOKE_URL="https://www.servercontrolpanel.de/realms/scp/protocol/openid-connect/revoke"
+NETCUP_CLIENT_ID="scp"
+
 # Farben für Ausgabe
 RED='\033[0;31m'
 GREEN='\033[0;32m'
@@ -596,6 +604,366 @@ cmd_route_remove() {
     fi
 }
 
+# === NETCUP API ===
+
+# Stellt sicher, dass die Konfigurationsdatei existiert
+netcup_ensure_config_dir() {
+    local config_dir
+    config_dir="$(dirname "$NETCUP_CONFIG")"
+    if [[ ! -d "$config_dir" ]]; then
+        mkdir -p "$config_dir"
+        chmod 700 "$config_dir"
+    fi
+}
+
+# Speichert Token-Daten in die Konfigurationsdatei
+netcup_save_tokens() {
+    local access_token="$1"
+    local refresh_token="$2"
+    netcup_ensure_config_dir
+    cat > "$NETCUP_CONFIG" << EOF
+NETCUP_ACCESS_TOKEN=${access_token}
+NETCUP_REFRESH_TOKEN=${refresh_token}
+EOF
+    chmod 600 "$NETCUP_CONFIG"
+}
+
+# Lädt Token-Daten aus der Konfigurationsdatei
+netcup_load_tokens() {
+    if [[ ! -f "$NETCUP_CONFIG" ]]; then
+        print_error "Nicht eingeloggt. Führe zuerst 'vps netcup login' aus."
+        exit 1
+    fi
+    source "$NETCUP_CONFIG"
+}
+
+# Erneuert den Access-Token mit dem Refresh-Token
+netcup_refresh_token() {
+    local response
+    response=$(curl -s -X POST "$NETCUP_TOKEN_URL" \
+        -H "Content-Type: application/x-www-form-urlencoded" \
+        -d "client_id=${NETCUP_CLIENT_ID}" \
+        -d "grant_type=refresh_token" \
+        -d "refresh_token=${NETCUP_REFRESH_TOKEN}")
+
+    local access_token refresh_token error
+    error=$(echo "$response" | jq -r '.error // empty')
+
+    if [[ -n "$error" ]]; then
+        local error_desc
+        error_desc=$(echo "$response" | jq -r '.error_description // empty')
+        print_error "Token-Erneuerung fehlgeschlagen: ${error_desc:-$error}"
+        print_warning "Bitte erneut einloggen mit 'vps netcup login'."
+        exit 1
+    fi
+
+    access_token=$(echo "$response" | jq -r '.access_token')
+    refresh_token=$(echo "$response" | jq -r '.refresh_token')
+
+    if [[ -z "$access_token" || "$access_token" == "null" ]]; then
+        print_error "Token-Erneuerung fehlgeschlagen. Bitte erneut einloggen mit 'vps netcup login'."
+        exit 1
+    fi
+
+    NETCUP_ACCESS_TOKEN="$access_token"
+    NETCUP_REFRESH_TOKEN="$refresh_token"
+    netcup_save_tokens "$access_token" "$refresh_token"
+}
+
+# Führt einen API-Aufruf aus (mit automatischem Token-Refresh bei 401)
+netcup_api() {
+    local method="$1"
+    local endpoint="$2"
+    shift 2
+    local extra_args=("$@")
+
+    netcup_load_tokens
+
+    local response http_code
+    response=$(curl -s -w "\n%{http_code}" -X "$method" \
+        "${NETCUP_API_BASE}${endpoint}" \
+        -H "Authorization: Bearer ${NETCUP_ACCESS_TOKEN}" \
+        -H "Accept: application/json" \
+        "${extra_args[@]}")
+
+    http_code=$(echo "$response" | tail -1)
+    local body
+    body=$(echo "$response" | sed '$d')
+
+    # Bei 401: Token erneuern und nochmal versuchen
+    if [[ "$http_code" == "401" ]]; then
+        netcup_refresh_token
+        response=$(curl -s -w "\n%{http_code}" -X "$method" \
+            "${NETCUP_API_BASE}${endpoint}" \
+            -H "Authorization: Bearer ${NETCUP_ACCESS_TOKEN}" \
+            -H "Accept: application/json" \
+            "${extra_args[@]}")
+        http_code=$(echo "$response" | tail -1)
+        body=$(echo "$response" | sed '$d')
+    fi
+
+    if [[ "$http_code" -ge 400 ]]; then
+        local msg
+        msg=$(echo "$body" | jq -r '.message // empty' 2>/dev/null)
+        print_error "API-Fehler (HTTP $http_code): ${msg:-$body}"
+        exit 1
+    fi
+
+    echo "$body"
+}
+
+# Login via Device Code Flow (wie GitHub)
+cmd_netcup_login_device() {
+    echo "Netcup SCP API Login (Device Code)"
+    echo ""
+
+    # Schritt 1: Device Code anfordern
+    local device_response
+    device_response=$(curl -s -X POST "$NETCUP_DEVICE_URL" \
+        -H "Content-Type: application/x-www-form-urlencoded" \
+        -d "client_id=${NETCUP_CLIENT_ID}" \
+        -d "scope=offline_access openid")
+
+    local device_code user_code verification_uri interval error
+    error=$(echo "$device_response" | jq -r '.error // empty')
+
+    if [[ -n "$error" ]]; then
+        local error_desc
+        error_desc=$(echo "$device_response" | jq -r '.error_description // empty')
+        print_error "Device Code Anfrage fehlgeschlagen: ${error_desc:-$error}"
+        exit 1
+    fi
+
+    device_code=$(echo "$device_response" | jq -r '.device_code')
+    user_code=$(echo "$device_response" | jq -r '.user_code')
+    verification_uri=$(echo "$device_response" | jq -r '.verification_uri_complete // .verification_uri')
+    interval=$(echo "$device_response" | jq -r '.interval // 5')
+
+    if [[ -z "$device_code" || "$device_code" == "null" ]]; then
+        print_error "Device Code Anfrage fehlgeschlagen. Unerwartete Antwort vom Server."
+        exit 1
+    fi
+
+    # Schritt 2: User auffordern, im Browser zu bestätigen
+    echo "Öffne diese URL im Browser und melde dich an:"
+    echo ""
+    echo "  $verification_uri"
+    echo ""
+    echo "Falls nach einem Code gefragt wird:  $user_code"
+    echo ""
+    echo "Warte auf Bestätigung..."
+
+    # Schritt 3: Token-Endpoint pollen
+    local max_attempts=60
+    local attempt=0
+
+    while [[ $attempt -lt $max_attempts ]]; do
+        sleep "$interval"
+        ((++attempt))
+
+        local response
+        response=$(curl -s -X POST "$NETCUP_TOKEN_URL" \
+            -H "Content-Type: application/x-www-form-urlencoded" \
+            -d "client_id=${NETCUP_CLIENT_ID}" \
+            -d "grant_type=urn:ietf:params:oauth:grant-type:device_code" \
+            -d "device_code=${device_code}")
+
+        local token_error
+        token_error=$(echo "$response" | jq -r '.error // empty')
+
+        case "$token_error" in
+            "authorization_pending")
+                # User hat noch nicht bestätigt - weiter warten
+                continue
+                ;;
+            "slow_down")
+                # Zu schnell - Intervall erhöhen
+                ((interval++))
+                continue
+                ;;
+            "expired_token")
+                print_error "Der Code ist abgelaufen. Bitte erneut versuchen."
+                exit 1
+                ;;
+            "access_denied")
+                print_error "Zugriff verweigert."
+                exit 1
+                ;;
+            "")
+                # Kein Fehler - Token erhalten!
+                local access_token refresh_token
+                access_token=$(echo "$response" | jq -r '.access_token')
+                refresh_token=$(echo "$response" | jq -r '.refresh_token')
+
+                if [[ -z "$access_token" || "$access_token" == "null" ]]; then
+                    print_error "Login fehlgeschlagen. Unerwartete Antwort vom Server."
+                    exit 1
+                fi
+
+                netcup_save_tokens "$access_token" "$refresh_token"
+                echo ""
+                print_success "Login erfolgreich! Token gespeichert."
+                return 0
+                ;;
+            *)
+                local error_desc
+                error_desc=$(echo "$response" | jq -r '.error_description // empty')
+                print_error "Login fehlgeschlagen: ${error_desc:-$token_error}"
+                exit 1
+                ;;
+        esac
+    done
+
+    print_error "Zeitüberschreitung. Bitte erneut versuchen."
+    exit 1
+}
+
+# Login-Alias
+cmd_netcup_login() {
+    cmd_netcup_login_device
+}
+
+# Logout: Widerruft Token serverseitig und löscht lokale Datei
+cmd_netcup_logout() {
+    if [[ ! -f "$NETCUP_CONFIG" ]]; then
+        echo "Nicht eingeloggt."
+        return
+    fi
+
+    source "$NETCUP_CONFIG"
+
+    # Refresh Token serverseitig widerrufen
+    if [[ -n "$NETCUP_REFRESH_TOKEN" ]]; then
+        curl -s -X POST "$NETCUP_REVOKE_URL" \
+            -d "client_id=${NETCUP_CLIENT_ID}" \
+            -d "token=${NETCUP_REFRESH_TOKEN}" \
+            -d "token_type_hint=refresh_token" > /dev/null 2>&1 || true
+    fi
+
+    rm -f "$NETCUP_CONFIG"
+    print_success "Logout erfolgreich. Token widerrufen und lokal gelöscht."
+}
+
+# Listet alle Server auf
+cmd_netcup_list() {
+    local search="$1"
+    local endpoint="/api/v1/servers"
+
+    if [[ -n "$search" ]]; then
+        endpoint="${endpoint}?q=$(printf '%s' "$search" | jq -sRr @uri)"
+    fi
+
+    local response
+    response=$(netcup_api GET "$endpoint")
+
+    local count
+    count=$(echo "$response" | jq 'length')
+
+    if [[ "$count" -eq 0 ]]; then
+        echo "Keine Server gefunden."
+        return
+    fi
+
+    echo "Netcup Server ($count):"
+    echo ""
+    printf "%-8s %-25s %-20s %-15s %s\n" "ID" "NAME" "HOSTNAME" "NICKNAME" "STATUS"
+    printf "%-8s %-25s %-20s %-15s %s\n" "--------" "-------------------------" "--------------------" "---------------" "--------"
+
+    echo "$response" | jq -r '.[] | [
+        (.id | tostring),
+        (.name // "-"),
+        (.hostname // "-"),
+        (.nickname // "-"),
+        (if .disabled then "deaktiviert" else "aktiv" end)
+    ] | @tsv' | while IFS=$'\t' read -r id name hostname nickname status; do
+        printf "%-8s %-25s %-20s %-15s %s\n" "$id" "$name" "$hostname" "$nickname" "$status"
+    done
+}
+
+# Zeigt Details zu einem Server
+cmd_netcup_info() {
+    local server_id="$1"
+
+    if [[ -z "$server_id" ]]; then
+        print_error "Bitte Server-ID angeben: vps netcup info <id>"
+        exit 1
+    fi
+
+    local response
+    response=$(netcup_api GET "/api/v1/servers/${server_id}")
+
+    echo "Server-Details:"
+    echo ""
+    echo "$response" | jq -r '
+        "  Name:         " + (.name // "-"),
+        "  Hostname:     " + (.hostname // "-"),
+        "  Nickname:     " + (.nickname // "-"),
+        "  Status:       " + (if .disabled then "deaktiviert" else "aktiv" end),
+        "  Standort:     " + (.site.city // "-"),
+        "  Architektur:  " + (.architecture // "-"),
+        "  Max CPUs:     " + (.maxCpuCount // 0 | tostring),
+        "  Freier Speicher: " + ((.disksAvailableSpaceInMiB // 0 | tostring) + " MiB"),
+        "  Snapshots:    " + (.snapshotCount // 0 | tostring),
+        "  Rescue aktiv: " + (if .rescueSystemActive then "ja" else "nein" end)'
+
+    # IPv4-Adressen
+    local ipv4_count
+    ipv4_count=$(echo "$response" | jq '.ipv4Addresses | length')
+    if [[ "$ipv4_count" -gt 0 ]]; then
+        echo ""
+        echo "  IPv4-Adressen:"
+        echo "$response" | jq -r '.ipv4Addresses[] | "    - " + .ip'
+    fi
+
+    # IPv6-Adressen
+    local ipv6_count
+    ipv6_count=$(echo "$response" | jq '.ipv6Addresses | length')
+    if [[ "$ipv6_count" -gt 0 ]]; then
+        echo ""
+        echo "  IPv6-Adressen:"
+        echo "$response" | jq -r '.ipv6Addresses[] | "    - " + .networkPrefix + "/" + (.networkPrefixLength | tostring)'
+    fi
+
+    # Live-Info (Status, Uptime, RAM etc.)
+    local has_live_info
+    has_live_info=$(echo "$response" | jq '.serverLiveInfo != null')
+    if [[ "$has_live_info" == "true" ]]; then
+        echo ""
+        echo "  Live-Info:"
+        echo "$response" | jq -r '.serverLiveInfo |
+            "    State:      " + (.state // "-"),
+            "    Uptime:     " + ((.uptimeInSeconds // 0) / 3600 | floor | tostring) + " Stunden",
+            "    RAM:        " + (.currentServerMemoryInMiB // 0 | tostring) + " / " + (.maxServerMemoryInMiB // 0 | tostring) + " MiB",
+            "    CPUs:       " + (.cpuCount // 0 | tostring) + " / " + (.cpuMaxCount // 0 | tostring)'
+    fi
+}
+
+# Netcup Unterbefehl-Router
+cmd_netcup() {
+    local subcmd="$1"
+    shift 2>/dev/null || true
+
+    case "$subcmd" in
+        login)
+            cmd_netcup_login "$@"
+            ;;
+        logout)
+            cmd_netcup_logout "$@"
+            ;;
+        list|ls)
+            cmd_netcup_list "$@"
+            ;;
+        info)
+            cmd_netcup_info "$@"
+            ;;
+        *)
+            print_error "Unbekannter Netcup-Befehl: $subcmd"
+            echo "Verwendung: vps netcup <login|logout|list|info>"
+            exit 1
+            ;;
+    esac
+}
+
 # === HELP ===
 cmd_help() {
     cat << 'EOF'
@@ -624,6 +992,12 @@ Routing:
   route list                        Zeigt alle Routes
   route remove <domain>             Entfernt eine Route
 
+Netcup API:
+  netcup login                      Login via Browser (Device Code Flow)
+  netcup logout                     Logout (Token widerrufen)
+  netcup list [suche]               Zeigt alle Netcup Server
+  netcup info <id>                  Zeigt Server-Details
+
   help                              Zeigt diese Hilfe
 
 Beispiele:
@@ -634,6 +1008,9 @@ Beispiele:
   vps traefik setup admin@mail.de   # Traefik einrichten
   vps route add app.de webserver 80 # Route hinzufügen
   vps route list                    # Routes anzeigen
+  vps netcup login                  # Login via Browser
+  vps netcup list                   # Netcup Server auflisten
+  vps netcup info 12345             # Server-Details anzeigen
 
 Konfiguration:
   Hosts-Datei: /etc/vps-hosts
@@ -677,6 +1054,9 @@ main() {
             ;;
         route)
             cmd_route "$@"
+            ;;
+        netcup)
+            cmd_netcup "$@"
             ;;
         help|--help|-h)
             cmd_help

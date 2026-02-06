@@ -64,9 +64,9 @@ EOF
 ifup "$CLOUDVLAN_INTERFACE" 2>/dev/null
 echo "[4/10] CloudVLAN konfiguriert: $CLOUDVLAN_INTERFACE -> $CLOUDVLAN_IP"
 
-# UFW Firewall installieren und konfigurieren
+# UFW Firewall und Abhängigkeiten installieren
 apt-get update -qq
-apt-get install -y -qq ufw
+apt-get install -y -qq ufw jq curl
 echo "[5/10] Firewall wird konfiguriert..."
 
 # fail2ban installieren (SSH Brute-Force Schutz)
