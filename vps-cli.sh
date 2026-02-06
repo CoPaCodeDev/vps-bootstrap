@@ -23,6 +23,7 @@ NETCUP_CONFIG="${HOME}/.config/vps-cli/netcup"
 NETCUP_API_BASE="https://www.servercontrolpanel.de/scp-core"
 NETCUP_TOKEN_URL="https://www.servercontrolpanel.de/realms/scp/protocol/openid-connect/token"
 NETCUP_DEVICE_URL="https://www.servercontrolpanel.de/realms/scp/protocol/openid-connect/auth/device"
+NETCUP_REVOKE_URL="https://www.servercontrolpanel.de/realms/scp/protocol/openid-connect/revoke"
 NETCUP_CLIENT_ID="scp"
 
 # Farben für Ausgabe
@@ -743,12 +744,12 @@ cmd_netcup_login_device() {
         exit 1
     fi
 
-    # Schritt 2: User auffordern, den Code einzugeben
-    echo "Öffne diese URL im Browser:"
+    # Schritt 2: User auffordern, im Browser zu bestätigen
+    echo "Öffne diese URL im Browser und melde dich an:"
     echo ""
     echo "  $verification_uri"
     echo ""
-    echo "Gib dort diesen Code ein:  $user_code"
+    echo "Falls nach einem Code gefragt wird:  $user_code"
     echo ""
     echo "Warte auf Bestätigung..."
 
@@ -817,70 +818,30 @@ cmd_netcup_login_device() {
     exit 1
 }
 
-# Login via Passwort (Fallback)
-cmd_netcup_login_password() {
-    echo "Netcup SCP API Login (Passwort)"
-    echo "Verwende deine CCP-Kundennummer als Benutzername."
-    echo "Das Passwort kannst du unter https://www.servercontrolpanel.de/realms/scp/account verwalten."
-    echo ""
-
-    read -p "Kundennummer: " username
-    read -s -p "Passwort: " password
-    echo ""
-
-    local response
-    response=$(curl -s -X POST "$NETCUP_TOKEN_URL" \
-        -H "Content-Type: application/x-www-form-urlencoded" \
-        -d "client_id=${NETCUP_CLIENT_ID}" \
-        -d "grant_type=password" \
-        -d "username=${username}" \
-        -d "password=${password}" \
-        -d "scope=offline_access openid")
-
-    local access_token refresh_token error
-    error=$(echo "$response" | jq -r '.error // empty')
-
-    if [[ -n "$error" ]]; then
-        local error_desc
-        error_desc=$(echo "$response" | jq -r '.error_description // empty')
-        print_error "Login fehlgeschlagen: ${error_desc:-$error}"
-        exit 1
-    fi
-
-    access_token=$(echo "$response" | jq -r '.access_token')
-    refresh_token=$(echo "$response" | jq -r '.refresh_token')
-
-    if [[ -z "$access_token" || "$access_token" == "null" ]]; then
-        print_error "Login fehlgeschlagen. Unerwartete Antwort vom Server."
-        exit 1
-    fi
-
-    netcup_save_tokens "$access_token" "$refresh_token"
-    print_success "Login erfolgreich! Token gespeichert."
-}
-
-# Login-Router
+# Login-Alias
 cmd_netcup_login() {
-    local method="${1:---device}"
-
-    case "$method" in
-        --password|-p)
-            cmd_netcup_login_password
-            ;;
-        --device|-d|*)
-            cmd_netcup_login_device
-            ;;
-    esac
+    cmd_netcup_login_device
 }
 
-# Logout: Löscht gespeicherte Tokens
+# Logout: Widerruft Token serverseitig und löscht lokale Datei
 cmd_netcup_logout() {
-    if [[ -f "$NETCUP_CONFIG" ]]; then
-        rm -f "$NETCUP_CONFIG"
-        print_success "Logout erfolgreich. Tokens gelöscht."
-    else
+    if [[ ! -f "$NETCUP_CONFIG" ]]; then
         echo "Nicht eingeloggt."
+        return
     fi
+
+    source "$NETCUP_CONFIG"
+
+    # Refresh Token serverseitig widerrufen
+    if [[ -n "$NETCUP_REFRESH_TOKEN" ]]; then
+        curl -s -X POST "$NETCUP_REVOKE_URL" \
+            -d "client_id=${NETCUP_CLIENT_ID}" \
+            -d "token=${NETCUP_REFRESH_TOKEN}" \
+            -d "token_type_hint=refresh_token" > /dev/null 2>&1 || true
+    fi
+
+    rm -f "$NETCUP_CONFIG"
+    print_success "Logout erfolgreich. Token widerrufen und lokal gelöscht."
 }
 
 # Listet alle Server auf
@@ -1033,8 +994,7 @@ Routing:
 
 Netcup API:
   netcup login                      Login via Browser (Device Code Flow)
-  netcup login --password           Login mit Kundennummer/Passwort
-  netcup logout                     Logout (Token löschen)
+  netcup logout                     Logout (Token widerrufen)
   netcup list [suche]               Zeigt alle Netcup Server
   netcup info <id>                  Zeigt Server-Details
 
@@ -1048,8 +1008,7 @@ Beispiele:
   vps traefik setup admin@mail.de   # Traefik einrichten
   vps route add app.de webserver 80 # Route hinzufügen
   vps route list                    # Routes anzeigen
-  vps netcup login                  # Login via Browser (empfohlen)
-  vps netcup login --password        # Login mit Passwort
+  vps netcup login                  # Login via Browser
   vps netcup list                   # Netcup Server auflisten
   vps netcup info 12345             # Server-Details anzeigen
 
