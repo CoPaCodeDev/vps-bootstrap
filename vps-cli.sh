@@ -22,6 +22,7 @@ TEMPLATES_DIR="${VPS_HOME}/templates"
 NETCUP_CONFIG="${HOME}/.config/vps-cli/netcup"
 NETCUP_API_BASE="https://www.servercontrolpanel.de/scp-core"
 NETCUP_TOKEN_URL="https://www.servercontrolpanel.de/realms/scp/protocol/openid-connect/token"
+NETCUP_DEVICE_URL="https://www.servercontrolpanel.de/realms/scp/protocol/openid-connect/auth/device"
 NETCUP_CLIENT_ID="scp"
 
 # Farben für Ausgabe
@@ -710,10 +711,117 @@ netcup_api() {
     echo "$body"
 }
 
-# Login: Holt Access- und Refresh-Token
-cmd_netcup_login() {
-    echo "Netcup SCP API Login"
-    echo "Verwende deine CCP-Kundennummer als Benutzername und dein SCP-Passwort."
+# Login via Device Code Flow (wie GitHub)
+cmd_netcup_login_device() {
+    echo "Netcup SCP API Login (Device Code)"
+    echo ""
+
+    # Schritt 1: Device Code anfordern
+    local device_response
+    device_response=$(curl -s -X POST "$NETCUP_DEVICE_URL" \
+        -H "Content-Type: application/x-www-form-urlencoded" \
+        -d "client_id=${NETCUP_CLIENT_ID}" \
+        -d "scope=offline_access openid")
+
+    local device_code user_code verification_uri interval error
+    error=$(echo "$device_response" | jq -r '.error // empty')
+
+    if [[ -n "$error" ]]; then
+        local error_desc
+        error_desc=$(echo "$device_response" | jq -r '.error_description // empty')
+        print_error "Device Code Anfrage fehlgeschlagen: ${error_desc:-$error}"
+        exit 1
+    fi
+
+    device_code=$(echo "$device_response" | jq -r '.device_code')
+    user_code=$(echo "$device_response" | jq -r '.user_code')
+    verification_uri=$(echo "$device_response" | jq -r '.verification_uri_complete // .verification_uri')
+    interval=$(echo "$device_response" | jq -r '.interval // 5')
+
+    if [[ -z "$device_code" || "$device_code" == "null" ]]; then
+        print_error "Device Code Anfrage fehlgeschlagen. Unerwartete Antwort vom Server."
+        exit 1
+    fi
+
+    # Schritt 2: User auffordern, den Code einzugeben
+    echo "Öffne diese URL im Browser:"
+    echo ""
+    echo "  $verification_uri"
+    echo ""
+    echo "Gib dort diesen Code ein:  $user_code"
+    echo ""
+    echo "Warte auf Bestätigung..."
+
+    # Schritt 3: Token-Endpoint pollen
+    local max_attempts=60
+    local attempt=0
+
+    while [[ $attempt -lt $max_attempts ]]; do
+        sleep "$interval"
+        ((attempt++))
+
+        local response
+        response=$(curl -s -X POST "$NETCUP_TOKEN_URL" \
+            -H "Content-Type: application/x-www-form-urlencoded" \
+            -d "client_id=${NETCUP_CLIENT_ID}" \
+            -d "grant_type=urn:ietf:params:oauth:grant-type:device_code" \
+            -d "device_code=${device_code}")
+
+        local token_error
+        token_error=$(echo "$response" | jq -r '.error // empty')
+
+        case "$token_error" in
+            "authorization_pending")
+                # User hat noch nicht bestätigt - weiter warten
+                continue
+                ;;
+            "slow_down")
+                # Zu schnell - Intervall erhöhen
+                ((interval++))
+                continue
+                ;;
+            "expired_token")
+                print_error "Der Code ist abgelaufen. Bitte erneut versuchen."
+                exit 1
+                ;;
+            "access_denied")
+                print_error "Zugriff verweigert."
+                exit 1
+                ;;
+            "")
+                # Kein Fehler - Token erhalten!
+                local access_token refresh_token
+                access_token=$(echo "$response" | jq -r '.access_token')
+                refresh_token=$(echo "$response" | jq -r '.refresh_token')
+
+                if [[ -z "$access_token" || "$access_token" == "null" ]]; then
+                    print_error "Login fehlgeschlagen. Unerwartete Antwort vom Server."
+                    exit 1
+                fi
+
+                netcup_save_tokens "$access_token" "$refresh_token"
+                echo ""
+                print_success "Login erfolgreich! Token gespeichert."
+                return 0
+                ;;
+            *)
+                local error_desc
+                error_desc=$(echo "$response" | jq -r '.error_description // empty')
+                print_error "Login fehlgeschlagen: ${error_desc:-$token_error}"
+                exit 1
+                ;;
+        esac
+    done
+
+    print_error "Zeitüberschreitung. Bitte erneut versuchen."
+    exit 1
+}
+
+# Login via Passwort (Fallback)
+cmd_netcup_login_password() {
+    echo "Netcup SCP API Login (Passwort)"
+    echo "Verwende deine CCP-Kundennummer als Benutzername."
+    echo "Das Passwort kannst du unter https://www.servercontrolpanel.de/realms/scp/account verwalten."
     echo ""
 
     read -p "Kundennummer: " username
@@ -748,7 +856,21 @@ cmd_netcup_login() {
     fi
 
     netcup_save_tokens "$access_token" "$refresh_token"
-    print_success "Login erfolgreich! Token gespeichert in ${NETCUP_CONFIG}"
+    print_success "Login erfolgreich! Token gespeichert."
+}
+
+# Login-Router
+cmd_netcup_login() {
+    local method="${1:---device}"
+
+    case "$method" in
+        --password|-p)
+            cmd_netcup_login_password
+            ;;
+        --device|-d|*)
+            cmd_netcup_login_device
+            ;;
+    esac
 }
 
 # Logout: Löscht gespeicherte Tokens
@@ -910,7 +1032,8 @@ Routing:
   route remove <domain>             Entfernt eine Route
 
 Netcup API:
-  netcup login                      Login bei Netcup SCP API
+  netcup login                      Login via Browser (Device Code Flow)
+  netcup login --password           Login mit Kundennummer/Passwort
   netcup logout                     Logout (Token löschen)
   netcup list [suche]               Zeigt alle Netcup Server
   netcup info <id>                  Zeigt Server-Details
@@ -925,7 +1048,8 @@ Beispiele:
   vps traefik setup admin@mail.de   # Traefik einrichten
   vps route add app.de webserver 80 # Route hinzufügen
   vps route list                    # Routes anzeigen
-  vps netcup login                  # Bei Netcup API einloggen
+  vps netcup login                  # Login via Browser (empfohlen)
+  vps netcup login --password        # Login mit Passwort
   vps netcup list                   # Netcup Server auflisten
   vps netcup info 12345             # Server-Details anzeigen
 
