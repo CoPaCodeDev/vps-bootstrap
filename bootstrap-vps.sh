@@ -1,7 +1,15 @@
 #!/bin/bash
+set -e
 #
 # Bootstrap-Script für Netcup VPS mit CloudVLAN (Debian 13)
 #
+
+# Root-Check
+if [[ $EUID -ne 0 ]]; then
+    echo "Fehler: Dieses Script muss als root ausgeführt werden."
+    echo "  sudo bash $0"
+    exit 1
+fi
 
 ###############################################################################
 # KONFIGURATION - Hier anpassen

@@ -1,10 +1,16 @@
 #!/bin/bash
+set -e
 #
 # Generiert SSH-Keypair für User master auf dem Proxy
 # Ermöglicht SSH-Zugriff vom Proxy auf alle VPS im CloudVLAN
 #
 
-set -e
+# Root-Check
+if [[ $EUID -ne 0 ]]; then
+    echo "Fehler: Dieses Script muss als root ausgeführt werden."
+    echo "  sudo bash $0"
+    exit 1
+fi
 
 echo "Generiere SSH-Keypair für master..."
 
