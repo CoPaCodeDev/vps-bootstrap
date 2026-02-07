@@ -13,6 +13,7 @@
 
 ## Netcup SCP REST API
 - OpenAPI-Spec: docs/api/netcup-scp-openapi.json
+- **VPS-Installation API-Referenz: docs/api/vps-install-api.md** (alle Endpunkte und Schemas für `vps install`)
 - Base-URL: https://www.servercontrolpanel.de/scp-core
 - Auth: Device Code Flow über Keycloak
   - Device-Endpoint: /realms/scp/protocol/openid-connect/auth/device
