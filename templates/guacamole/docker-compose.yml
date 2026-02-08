@@ -1,33 +1,35 @@
 services:
+  # Schritt 1: SQL-Schema aus dem Guacamole-Image generieren
+  init-db:
+    image: guacamole/guacamole
+    container_name: guacamole-init
+    entrypoint: /bin/sh
+    command:
+      - -c
+      - /opt/guacamole/bin/initdb.sh --postgresql > /initdb/00-schema.sql
+    volumes:
+      - initdb:/initdb
+
+  # Schritt 2: PostgreSQL startet und führt Schema aus initdb.d aus
   postgres:
     image: postgres:16
     container_name: guacamole-db
     restart: unless-stopped
+    depends_on:
+      init-db:
+        condition: service_completed_successfully
     environment:
       POSTGRES_DB: guacamole
       POSTGRES_USER: guacamole
       POSTGRES_PASSWORD: {{DB_PASSWORD}}
     volumes:
       - ./db-data:/var/lib/postgresql/data
+      - initdb:/docker-entrypoint-initdb.d:ro
     healthcheck:
       test: ["CMD-SHELL", "pg_isready -U guacamole"]
       interval: 5s
       timeout: 5s
       retries: 10
-
-  init-db:
-    image: guacamole/guacamole
-    container_name: guacamole-init
-    depends_on:
-      postgres:
-        condition: service_healthy
-    entrypoint: /bin/sh
-    command:
-      - -c
-      - |
-        /opt/guacamole/bin/initdb.sh --postgresql | PGPASSWORD={{DB_PASSWORD}} psql -h postgres -U guacamole guacamole
-    environment:
-      PGPASSWORD: {{DB_PASSWORD}}
 
   guacd:
     image: guacamole/guacd
@@ -39,8 +41,8 @@ services:
     container_name: guacamole-web
     restart: unless-stopped
     depends_on:
-      init-db:
-        condition: service_completed_successfully
+      postgres:
+        condition: service_healthy
       guacd:
         condition: service_started
     environment:
@@ -53,3 +55,6 @@ services:
       WEBAPP_CONTEXT: ROOT
     ports:
       - "8080:8080"
+
+volumes:
+  initdb:
