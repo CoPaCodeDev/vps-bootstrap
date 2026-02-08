@@ -75,3 +75,20 @@ services:
       - ./consume:/usr/src/paperless/consume
     ports:
       - "8000:8000"
+
+  paperless-ai:
+    image: clusterzx/paperless-ai
+    container_name: paperless-ai
+    restart: unless-stopped
+    profiles:
+      - ai
+    depends_on:
+      paperless:
+        condition: service_started
+    environment:
+      PAPERLESS_AI_INITIAL_SETUP: "true"
+      PAPERLESS_API_URL: http://paperless:8000
+    volumes:
+      - ./paperless-ai-data:/app/data
+    ports:
+      - "3000:3000"

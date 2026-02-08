@@ -854,6 +854,7 @@ deploy_load_template() {
     TEMPLATE_REQUIRES_ROUTE=false
     TEMPLATE_ROUTE_PORT=""
     TEMPLATE_VARS=()
+    TEMPLATE_COMPOSE_PROFILES=()
 
     source "$conf"
 }
@@ -1119,9 +1120,24 @@ cmd_deploy_app() {
     done
     deploy_files "$ip" "$template_dir" "$deploy_dir" "${var_args[@]}"
 
+    # Compose Profiles ermitteln
+    local profiles=""
+    if [[ ${#TEMPLATE_COMPOSE_PROFILES[@]} -gt 0 ]]; then
+        local -A active_profiles
+        for profile_def in "${TEMPLATE_COMPOSE_PROFILES[@]}"; do
+            IFS='|' read -r prof_var prof_val prof_name <<< "$profile_def"
+            if [[ "${collected_vars[$prof_var]}" == "$prof_val" ]]; then
+                active_profiles["$prof_name"]=1
+            fi
+        done
+        for prof in "${!active_profiles[@]}"; do
+            profiles+=" --profile ${prof}"
+        done
+    fi
+
     # Container starten
     echo "Starte Container..."
-    ssh_exec "$ip" "cd ${deploy_dir} && docker compose up -d"
+    ssh_exec "$ip" "cd ${deploy_dir} && docker compose${profiles} up -d"
 
     # Route anlegen
     if [[ "$TEMPLATE_REQUIRES_ROUTE" == "true" && -n "${collected_vars[DOMAIN]}" ]]; then
