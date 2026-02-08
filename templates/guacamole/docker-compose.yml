@@ -1,26 +1,14 @@
 services:
-  # Erzeugt das Datenbank-Schema beim ersten Start
-  init-db:
-    image: guacamole/guacamole
-    entrypoint: /bin/sh
-    command: ["-c", "/opt/guacamole/bin/initdb.sh --postgresql > /init/initdb.sql"]
-    volumes:
-      - ./initdb:/init
-
   postgres:
     image: postgres:16
     container_name: guacamole-db
     restart: unless-stopped
-    depends_on:
-      init-db:
-        condition: service_completed_successfully
     environment:
       POSTGRES_DB: guacamole
       POSTGRES_USER: guacamole
       POSTGRES_PASSWORD: {{DB_PASSWORD}}
     volumes:
       - ./db-data:/var/lib/postgresql/data
-      - ./initdb:/docker-entrypoint-initdb.d:ro
 
   guacd:
     image: guacamole/guacd
@@ -40,5 +28,6 @@ services:
       POSTGRESQL_DATABASE: guacamole
       POSTGRESQL_USER: guacamole
       POSTGRESQL_PASSWORD: {{DB_PASSWORD}}
+      POSTGRESQL_AUTO_CREATE_ACCOUNTS: "true"
     ports:
       - "8080:8080"
