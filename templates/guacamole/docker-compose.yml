@@ -2,7 +2,8 @@ services:
   # Erzeugt das Datenbank-Schema beim ersten Start
   init-db:
     image: guacamole/guacamole
-    command: ["/bin/sh", "-c", "/opt/guacamole/bin/initdb.sh --postgresql > /init/initdb.sql"]
+    entrypoint: /bin/sh
+    command: ["-c", "/opt/guacamole/bin/initdb.sh --postgresql > /init/initdb.sql"]
     volumes:
       - ./initdb:/init
 
