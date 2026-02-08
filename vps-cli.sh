@@ -135,6 +135,24 @@ proxy_write() {
     fi
 }
 
+# Datei auf beliebigen Host schreiben (von stdin)
+host_write() {
+    local ip="$1"
+    local dest="$2"
+    if is_local_proxy "$ip"; then
+        sudo tee "$dest" > /dev/null
+    else
+        ssh $SSH_OPTS "${SSH_USER}@${ip}" "sudo tee $dest > /dev/null"
+    fi
+}
+
+# Verzeichnis auf Host erstellen (mit korrekten Rechten)
+host_mkdir() {
+    local ip="$1"
+    local dir="$2"
+    ssh_exec "$ip" "sudo mkdir -p $dir && sudo chown ${SSH_USER}:${SSH_USER} $dir"
+}
+
 # === SCAN ===
 cmd_scan() {
     echo "Scanne Netzwerk ${NETWORK_PREFIX}.${SCAN_RANGE_START}-${SCAN_RANGE_END}..."
@@ -809,6 +827,362 @@ cmd_route_remove() {
     fi
 }
 
+# === DEPLOY ===
+
+# Template-Konfiguration laden und validieren
+deploy_load_template() {
+    local template="$1"
+    local template_dir="${TEMPLATES_DIR}/${template}"
+    local conf="${template_dir}/template.conf"
+
+    if [[ ! -d "$template_dir" ]]; then
+        print_error "Template '$template' nicht gefunden."
+        echo "Verfügbare Templates: vps deploy list"
+        exit 1
+    fi
+
+    if [[ ! -f "$conf" ]]; then
+        print_error "Template '$template' hat keine template.conf"
+        exit 1
+    fi
+
+    # Defaults setzen
+    TEMPLATE_NAME=""
+    TEMPLATE_DESCRIPTION=""
+    TEMPLATE_DEPLOY_DIR=""
+    TEMPLATE_REQUIRES_DOCKER=true
+    TEMPLATE_REQUIRES_ROUTE=false
+    TEMPLATE_ROUTE_PORT=""
+    TEMPLATE_VARS=()
+
+    source "$conf"
+}
+
+# Variablen interaktiv abfragen
+deploy_collect_vars() {
+    local -n result_vars=$1
+    shift
+    local vars=("$@")
+
+    for var_def in "${vars[@]}"; do
+        IFS='|' read -r var_name var_desc var_default var_type <<< "$var_def"
+
+        local value=""
+        if [[ "$var_type" == "secret" ]]; then
+            while [[ -z "$value" ]]; do
+                read -s -p "${var_desc}: " value
+                echo ""
+            done
+        elif [[ -n "$var_default" ]]; then
+            read -p "${var_desc} [${var_default}]: " value
+            [[ -z "$value" ]] && value="$var_default"
+        else
+            while [[ -z "$value" ]]; do
+                read -p "${var_desc}: " value
+            done
+        fi
+
+        result_vars["$var_name"]="$value"
+    done
+}
+
+# Template-Dateien substituieren und auf Host deployen
+deploy_files() {
+    local ip="$1"
+    local template_dir="$2"
+    local deploy_dir="$3"
+    shift 3
+
+    # Assoziatives Array aus den restlichen Argumenten aufbauen
+    # Format: KEY=VALUE KEY2=VALUE2 ...
+    local -A vars
+    while [[ $# -gt 0 ]]; do
+        local key="${1%%=*}"
+        local val="${1#*=}"
+        vars["$key"]="$val"
+        shift
+    done
+
+    # Verzeichnis erstellen
+    host_mkdir "$ip" "$deploy_dir"
+
+    # Alle Dateien im Template verarbeiten (außer template.conf)
+    while IFS= read -r file; do
+        local rel_path="${file#${template_dir}/}"
+        local dest_path="${deploy_dir}/${rel_path}"
+
+        # Unterverzeichnis erstellen falls nötig
+        local dest_dir
+        dest_dir=$(dirname "$dest_path")
+        if [[ "$dest_dir" != "$deploy_dir" ]]; then
+            host_mkdir "$ip" "$dest_dir"
+        fi
+
+        # Datei lesen und Variablen substituieren
+        local content
+        content=$(cat "$file")
+
+        for var_name in "${!vars[@]}"; do
+            content=$(echo "$content" | sed "s|{{${var_name}}}|${vars[$var_name]}|g")
+        done
+
+        echo "$content" | host_write "$ip" "$dest_path"
+    done < <(find "$template_dir" -type f ! -name "template.conf" ! -name ".gitkeep")
+}
+
+# Verfügbare Templates auflisten
+cmd_deploy_list() {
+    echo "Verfügbare Templates:"
+    echo ""
+    printf "%-20s %s\n" "NAME" "BESCHREIBUNG"
+    printf "%-20s %s\n" "--------------------" "----------------------------------------"
+
+    for dir in "${TEMPLATES_DIR}"/*/; do
+        [[ ! -d "$dir" ]] && continue
+        local conf="${dir}template.conf"
+        [[ ! -f "$conf" ]] && continue
+
+        local name description
+        name=$(basename "$dir")
+        TEMPLATE_DESCRIPTION=""
+        source "$conf"
+        description="$TEMPLATE_DESCRIPTION"
+
+        printf "%-20s %s\n" "$name" "$description"
+    done
+}
+
+# Deployment auf einem Host anzeigen
+cmd_deploy_status() {
+    local target="$1"
+
+    if [[ -z "$target" ]]; then
+        print_error "Bitte Host angeben: vps deploy status <host>"
+        exit 1
+    fi
+
+    local ip=$(resolve_host "$target")
+    echo "Deployments auf $target ($ip):"
+    echo ""
+
+    # Prüfe /opt auf Verzeichnisse mit docker-compose.yml
+    local deployments
+    deployments=$(ssh_exec "$ip" "find /opt -maxdepth 2 -name 'docker-compose.yml' -type f 2>/dev/null" || true)
+
+    if [[ -z "$deployments" ]]; then
+        echo "Keine Deployments gefunden."
+        return
+    fi
+
+    printf "%-20s %-15s %s\n" "APP" "STATUS" "VERZEICHNIS"
+    printf "%-20s %-15s %s\n" "--------------------" "---------------" "--------------------"
+
+    for compose_file in $deployments; do
+        local app_dir
+        app_dir=$(dirname "$compose_file")
+        local app_name
+        app_name=$(basename "$app_dir")
+        local status
+        status=$(ssh_exec "$ip" "cd $app_dir && docker compose ps --format '{{.Status}}' 2>/dev/null | head -1" || echo "unbekannt")
+
+        [[ -z "$status" ]] && status="gestoppt"
+        printf "%-20s %-15s %s\n" "$app_name" "$status" "$app_dir"
+    done
+}
+
+# Deployment entfernen
+cmd_deploy_remove() {
+    local target="$1"
+    local app="$2"
+
+    if [[ -z "$target" ]] || [[ -z "$app" ]]; then
+        print_error "Verwendung: vps deploy remove <host> <app>"
+        exit 1
+    fi
+
+    local ip=$(resolve_host "$target")
+    local deploy_dir="/opt/${app}"
+
+    # Prüfe ob Deployment existiert
+    if ! ssh_exec "$ip" "test -f ${deploy_dir}/docker-compose.yml" 2>/dev/null; then
+        print_error "Kein Deployment '${app}' auf ${target} gefunden."
+        exit 1
+    fi
+
+    print_warning "WARNUNG: Deployment '${app}' auf ${target} wird entfernt!"
+    print_warning "Container werden gestoppt und Daten in ${deploy_dir} gelöscht."
+    read -p "Fortfahren? [j/N] " confirm
+
+    if [[ "$confirm" =~ ^[jJyY]$ ]]; then
+        echo "Stoppe Container..."
+        ssh_exec "$ip" "cd ${deploy_dir} && docker compose down -v" 2>/dev/null || true
+        echo "Entferne Dateien..."
+        ssh_exec "$ip" "sudo rm -rf ${deploy_dir}"
+        print_success "Deployment '${app}' entfernt."
+    else
+        echo "Abgebrochen."
+    fi
+}
+
+# Haupt-Deploy-Funktion
+cmd_deploy_app() {
+    local template="$1"
+    local target="$2"
+
+    if [[ -z "$template" ]] || [[ -z "$target" ]]; then
+        print_error "Verwendung: vps deploy <template> <host>"
+        echo "Beispiel: vps deploy uptime-kuma webserver"
+        exit 1
+    fi
+
+    local ip=$(resolve_host "$target")
+    local template_dir="${TEMPLATES_DIR}/${template}"
+
+    # Template laden
+    deploy_load_template "$template"
+
+    local deploy_dir="${TEMPLATE_DEPLOY_DIR:-/opt/${template}}"
+
+    echo "=== Deploy: ${TEMPLATE_NAME:-$template} ==="
+    echo "Ziel: $target ($ip)"
+    echo "Verzeichnis: $deploy_dir"
+    echo ""
+
+    # Prüfe ob bereits deployed
+    if ssh_exec "$ip" "test -f ${deploy_dir}/docker-compose.yml" 2>/dev/null; then
+        print_warning "${template} ist bereits auf ${target} deployed."
+        read -p "Überschreiben? [j/N] " confirm
+        if [[ ! "$confirm" =~ ^[jJyY]$ ]]; then
+            echo "Abgebrochen."
+            exit 0
+        fi
+        echo "Stoppe bestehende Container..."
+        ssh_exec "$ip" "cd ${deploy_dir} && docker compose down" 2>/dev/null || true
+    fi
+
+    # Docker sicherstellen
+    if [[ "$TEMPLATE_REQUIRES_DOCKER" == "true" ]]; then
+        if ! ssh_exec "$ip" "command -v docker" &>/dev/null; then
+            echo "Docker nicht gefunden, installiere..."
+            cmd_docker_install "$target"
+            echo ""
+        fi
+    fi
+
+    # Variablen abfragen
+    local -A collected_vars
+    if [[ ${#TEMPLATE_VARS[@]} -gt 0 ]]; then
+        echo "Konfiguration:"
+        deploy_collect_vars collected_vars "${TEMPLATE_VARS[@]}"
+        echo ""
+    fi
+
+    # HOST_IP automatisch setzen
+    collected_vars["HOST_IP"]="$ip"
+
+    # Zusammenfassung
+    echo "Zusammenfassung:"
+    echo "  Template:   ${TEMPLATE_NAME:-$template}"
+    echo "  Ziel:       $target ($ip)"
+    echo "  Verzeichnis: $deploy_dir"
+    for key in "${!collected_vars[@]}"; do
+        [[ "$key" == "HOST_IP" ]] && continue
+        # Secrets nicht anzeigen
+        local is_secret=false
+        for var_def in "${TEMPLATE_VARS[@]}"; do
+            IFS='|' read -r vn vd vdf vt <<< "$var_def"
+            if [[ "$vn" == "$key" && "$vt" == "secret" ]]; then
+                is_secret=true
+                break
+            fi
+        done
+        if [[ "$is_secret" == "true" ]]; then
+            echo "  ${key}: ********"
+        else
+            echo "  ${key}: ${collected_vars[$key]}"
+        fi
+    done
+    echo ""
+    read -p "Deployment starten? [j/N] " confirm
+    if [[ ! "$confirm" =~ ^[jJyY]$ ]]; then
+        echo "Abgebrochen."
+        exit 0
+    fi
+
+    echo ""
+
+    # Dateien deployen
+    echo "Kopiere Dateien..."
+    local var_args=()
+    for key in "${!collected_vars[@]}"; do
+        var_args+=("${key}=${collected_vars[$key]}")
+    done
+    deploy_files "$ip" "$template_dir" "$deploy_dir" "${var_args[@]}"
+
+    # Container starten
+    echo "Starte Container..."
+    ssh_exec "$ip" "cd ${deploy_dir} && docker compose up -d"
+
+    # Route anlegen
+    if [[ "$TEMPLATE_REQUIRES_ROUTE" == "true" && -n "${collected_vars[DOMAIN]}" ]]; then
+        echo "Lege Traefik-Route an..."
+        cmd_route_add "${collected_vars[DOMAIN]}" "$target" "${TEMPLATE_ROUTE_PORT}"
+    fi
+
+    echo ""
+    print_success "${TEMPLATE_NAME:-$template} erfolgreich deployed auf ${target}!"
+    if [[ -n "${collected_vars[DOMAIN]}" ]]; then
+        echo "Erreichbar unter: https://${collected_vars[DOMAIN]}"
+    fi
+}
+
+# Deploy Hilfe
+cmd_deploy_help() {
+    cat << 'EOF'
+App-Deployment auf VPS
+
+Verwendung: vps deploy <befehl> [optionen]
+
+Befehle:
+  <template> <host>       Template auf einen Host deployen
+  list                    Verfügbare Templates anzeigen
+  status <host>           Deployments auf einem Host anzeigen
+  remove <host> <app>     Deployment entfernen
+  help                    Diese Hilfe anzeigen
+
+Beispiele:
+  vps deploy list                       # Templates anzeigen
+  vps deploy uptime-kuma webserver      # Uptime Kuma deployen
+  vps deploy status webserver           # Deployments anzeigen
+  vps deploy remove webserver uptime-kuma  # Deployment entfernen
+EOF
+}
+
+# Deploy Unterbefehl-Router
+cmd_deploy() {
+    local subcmd="$1"
+    shift 2>/dev/null || true
+
+    case "$subcmd" in
+        list|ls)
+            cmd_deploy_list
+            ;;
+        status)
+            cmd_deploy_status "$@"
+            ;;
+        remove|rm)
+            cmd_deploy_remove "$@"
+            ;;
+        help|--help|-h|"")
+            cmd_deploy_help
+            ;;
+        *)
+            # Alles andere ist ein Template-Name
+            cmd_deploy_app "$subcmd" "$@"
+            ;;
+    esac
+}
+
 # === NETCUP API ===
 
 # Stellt sicher, dass die Konfigurationsdatei existiert
@@ -1291,6 +1665,13 @@ Routing:
   route list                        Zeigt alle Routes
   route remove <domain>             Entfernt eine Route
 
+Deployment:
+  deploy <template> <host>          Deployed ein Template auf einen Host
+  deploy list                       Zeigt verfügbare Templates
+  deploy status <host>              Zeigt Deployments auf einem Host
+  deploy remove <host> <app>        Entfernt ein Deployment
+  deploy help                       Zeigt Deploy-Hilfe
+
 Netcup API:
   netcup login                      Login via Browser (Device Code Flow)
   netcup logout                     Logout (Token widerrufen)
@@ -1310,6 +1691,9 @@ Beispiele:
   vps traefik setup                 # Traefik einrichten (interaktiv)
   vps route add app.de webserver 80 # Route hinzufügen
   vps route list                    # Routes anzeigen
+  vps deploy list                   # Verfügbare Templates
+  vps deploy uptime-kuma webserver  # App deployen
+  vps deploy status webserver       # Deployments anzeigen
   vps netcup login                  # Login via Browser
   vps netcup list                   # Netcup Server auflisten
   vps netcup info v2202501234       # Server-Details (per Hostname)
@@ -1356,6 +1740,9 @@ main() {
             ;;
         route)
             cmd_route "$@"
+            ;;
+        deploy)
+            cmd_deploy "$@"
             ;;
         netcup)
             cmd_netcup "$@"
