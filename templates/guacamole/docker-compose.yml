@@ -9,6 +9,25 @@ services:
       POSTGRES_PASSWORD: {{DB_PASSWORD}}
     volumes:
       - ./db-data:/var/lib/postgresql/data
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U guacamole"]
+      interval: 5s
+      timeout: 5s
+      retries: 10
+
+  init-db:
+    image: guacamole/guacamole
+    container_name: guacamole-init
+    depends_on:
+      postgres:
+        condition: service_healthy
+    entrypoint: /bin/sh
+    command:
+      - -c
+      - |
+        /opt/guacamole/bin/initdb.sh --postgresql | PGPASSWORD={{DB_PASSWORD}} psql -h postgres -U guacamole guacamole
+    environment:
+      PGPASSWORD: {{DB_PASSWORD}}
 
   guacd:
     image: guacamole/guacd
@@ -20,8 +39,10 @@ services:
     container_name: guacamole-web
     restart: unless-stopped
     depends_on:
-      - guacd
-      - postgres
+      init-db:
+        condition: service_completed_successfully
+      guacd:
+        condition: service_started
     environment:
       GUACD_HOSTNAME: guacd
       POSTGRESQL_HOSTNAME: postgres
