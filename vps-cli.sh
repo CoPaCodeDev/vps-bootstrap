@@ -572,20 +572,75 @@ cmd_traefik() {
 }
 
 cmd_traefik_setup() {
-    local email="$1"
+    echo "=== Traefik Setup ==="
+    echo ""
 
-    if [[ -z "$email" ]]; then
-        print_error "Bitte E-Mail-Adresse für Let's Encrypt angeben: vps traefik setup <email>"
+    # E-Mail abfragen
+    local email=""
+    while [[ -z "$email" ]]; do
+        read -p "E-Mail-Adresse (für Let's Encrypt): " email
+    done
+
+    # Dashboard-Domain abfragen
+    local domain=""
+    while [[ -z "$domain" ]]; do
+        read -p "Dashboard-Domain (z.B. traefik.example.de): " domain
+    done
+
+    # BasicAuth Zugangsdaten abfragen
+    echo ""
+    echo "Zugangsdaten für das Dashboard:"
+    local auth_user=""
+    while [[ -z "$auth_user" ]]; do
+        read -p "Benutzername: " auth_user
+    done
+
+    local auth_pass=""
+    while [[ -z "$auth_pass" ]]; do
+        read -s -p "Passwort: " auth_pass
+        echo ""
+    done
+    local auth_pass_confirm=""
+    read -s -p "Passwort bestätigen: " auth_pass_confirm
+    echo ""
+
+    if [[ "$auth_pass" != "$auth_pass_confirm" ]]; then
+        print_error "Passwörter stimmen nicht überein."
         exit 1
     fi
 
+    # Zusammenfassung anzeigen
+    echo ""
+    echo "Zusammenfassung:"
+    echo "  E-Mail:     $email"
+    echo "  Dashboard:  https://$domain"
+    echo "  Benutzer:   $auth_user"
+    echo ""
+    read -p "Einrichtung starten? (j/n): " confirm
+    if [[ "$confirm" != "j" && "$confirm" != "J" ]]; then
+        echo "Abgebrochen."
+        exit 0
+    fi
+
+    echo ""
     echo "Richte Traefik auf Proxy ($PROXY_IP) ein..."
 
     # Prüfe ob Docker installiert ist
     if ! proxy_exec "command -v docker" &>/dev/null; then
-        print_error "Docker ist nicht installiert. Führe zuerst 'vps docker proxy' aus."
+        print_error "Docker ist nicht installiert. Führe zuerst 'vps docker install proxy' aus."
         exit 1
     fi
+
+    # bcrypt-Hash für BasicAuth erzeugen
+    echo "Erzeuge Zugangsdaten..."
+    local auth_hash
+    auth_hash=$(proxy_exec "echo '$auth_pass' | sudo docker run --rm -i httpd:2-alpine htpasswd -niB '$auth_user'" 2>/dev/null | tr -d '\n')
+    if [[ -z "$auth_hash" ]]; then
+        print_error "Konnte BasicAuth-Hash nicht erzeugen. Ist Docker auf dem Proxy installiert?"
+        exit 1
+    fi
+    # Doppelte $-Zeichen escapen für Docker Compose
+    local auth_escaped="${auth_hash//\$/\$\$}"
 
     # Erstelle Verzeichnisstruktur
     echo "Erstelle Verzeichnisstruktur..."
@@ -594,8 +649,10 @@ cmd_traefik_setup() {
     # Kopiere Konfigurationsdateien
     echo "Kopiere Konfigurationsdateien..."
 
-    # docker-compose.yml
-    cat "${TEMPLATES_DIR}/traefik/docker-compose.yml" | proxy_write "${TRAEFIK_DIR}/docker-compose.yml"
+    # docker-compose.yml mit Dashboard-Domain und Auth
+    sed -e "s/\${DASHBOARD_DOMAIN}/${domain}/" \
+        -e "s|\${DASHBOARD_AUTH}|${auth_escaped}|" \
+        "${TEMPLATES_DIR}/traefik/docker-compose.yml" | proxy_write "${TRAEFIK_DIR}/docker-compose.yml"
 
     # traefik.yml mit E-Mail-Adresse
     sed "s/\${ACME_EMAIL}/${email}/" "${TEMPLATES_DIR}/traefik/traefik.yml" | proxy_write "${TRAEFIK_DIR}/traefik.yml"
@@ -612,9 +669,12 @@ cmd_traefik_setup() {
 
     print_success "Traefik erfolgreich eingerichtet!"
     echo ""
-    echo "Nächste Schritte:"
-    echo "  1. DNS-Eintrag für Domain auf Proxy-Public-IP setzen"
-    echo "  2. Route hinzufügen: vps route add <domain> <host> <port>"
+    echo "Dashboard: https://$domain"
+    echo "Login:     $auth_user / ********"
+    echo ""
+    echo "Hinweis: DNS-Eintrag für '$domain' muss auf die Proxy-Public-IP zeigen."
+    echo ""
+    echo "Routen hinzufügen: vps route add <domain> <host> <port>"
 }
 
 cmd_traefik_status() {
@@ -1221,7 +1281,7 @@ Docker & Traefik:
   docker start <host> <container>   Startet einen Container
   docker stop <host> <container>    Stoppt einen Container
   docker help                       Zeigt Docker-Hilfe
-  traefik setup <email>             Richtet Traefik auf dem Proxy ein
+  traefik setup                      Richtet Traefik auf dem Proxy ein (interaktiv)
   traefik status                    Zeigt Traefik-Status
   traefik logs [lines]              Zeigt Traefik-Logs
   traefik restart                   Startet Traefik neu
@@ -1247,7 +1307,7 @@ Beispiele:
   vps docker install proxy           # Docker auf Proxy installieren
   vps docker list webserver          # Container auf VPS anzeigen
   vps docker stop webserver myapp    # Container stoppen
-  vps traefik setup admin@mail.de   # Traefik einrichten
+  vps traefik setup                 # Traefik einrichten (interaktiv)
   vps route add app.de webserver 80 # Route hinzufügen
   vps route list                    # Routes anzeigen
   vps netcup login                  # Login via Browser
