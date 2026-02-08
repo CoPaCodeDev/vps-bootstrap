@@ -855,6 +855,7 @@ deploy_load_template() {
     TEMPLATE_ROUTE_PORT=""
     TEMPLATE_VARS=()
     TEMPLATE_COMPOSE_PROFILES=()
+    TEMPLATE_ADDITIONAL_ROUTES=()
 
     source "$conf"
 }
@@ -866,7 +867,25 @@ deploy_collect_vars() {
     local vars=("$@")
 
     for var_def in "${vars[@]}"; do
-        IFS='|' read -r var_name var_desc var_default var_type <<< "$var_def"
+        IFS='|' read -r var_name var_desc var_default var_type var_condition <<< "$var_def"
+
+        # Bedingte Variable: nur abfragen wenn Bedingung erfüllt
+        # Format: VARIABLE=wert1,wert2
+        if [[ -n "$var_condition" ]]; then
+            local cond_var="${var_condition%%=*}"
+            local cond_vals="${var_condition#*=}"
+            local cond_match=false
+            IFS=',' read -ra cond_list <<< "$cond_vals"
+            for cv in "${cond_list[@]}"; do
+                if [[ "${result_vars[$cond_var]}" == "$cv" ]]; then
+                    cond_match=true
+                    break
+                fi
+            done
+            if [[ "$cond_match" != "true" ]]; then
+                continue
+            fi
+        fi
 
         local value=""
         if [[ "$var_type" == "secret" ]]; then
@@ -1145,10 +1164,30 @@ cmd_deploy_app() {
         cmd_route_add "${collected_vars[DOMAIN]}" "$target" "${TEMPLATE_ROUTE_PORT}"
     fi
 
+    # Zusätzliche Routen anlegen
+    if [[ ${#TEMPLATE_ADDITIONAL_ROUTES[@]} -gt 0 ]]; then
+        for route_def in "${TEMPLATE_ADDITIONAL_ROUTES[@]}"; do
+            IFS='|' read -r route_var route_port <<< "$route_def"
+            if [[ -n "${collected_vars[$route_var]}" ]]; then
+                echo "Lege Traefik-Route an (${collected_vars[$route_var]})..."
+                cmd_route_add "${collected_vars[$route_var]}" "$target" "$route_port"
+            fi
+        done
+    fi
+
     echo ""
     print_success "${TEMPLATE_NAME:-$template} erfolgreich deployed auf ${target}!"
     if [[ -n "${collected_vars[DOMAIN]}" ]]; then
         echo "Erreichbar unter: https://${collected_vars[DOMAIN]}"
+    fi
+    # Zusätzliche URLs anzeigen
+    if [[ ${#TEMPLATE_ADDITIONAL_ROUTES[@]} -gt 0 ]]; then
+        for route_def in "${TEMPLATE_ADDITIONAL_ROUTES[@]}"; do
+            IFS='|' read -r route_var route_port <<< "$route_def"
+            if [[ -n "${collected_vars[$route_var]}" ]]; then
+                echo "Erreichbar unter: https://${collected_vars[$route_var]}"
+            fi
+        done
     fi
 }
 
