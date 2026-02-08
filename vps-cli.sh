@@ -335,10 +335,61 @@ cmd_ssh() {
 
 # === DOCKER ===
 cmd_docker() {
+    local subcmd="$1"
+    shift 2>/dev/null || true
+
+    case "$subcmd" in
+        install)
+            cmd_docker_install "$@"
+            ;;
+        list|ls|ps)
+            cmd_docker_list "$@"
+            ;;
+        start)
+            cmd_docker_start "$@"
+            ;;
+        stop)
+            cmd_docker_stop "$@"
+            ;;
+        help|--help|-h|"")
+            cmd_docker_help
+            ;;
+        *)
+            print_error "Unbekannter Docker-Befehl: $subcmd"
+            echo "Verwende 'vps docker help' für eine Liste der Befehle."
+            exit 1
+            ;;
+    esac
+}
+
+cmd_docker_help() {
+    cat << 'EOF'
+Docker-Verwaltung auf VPS
+
+Verwendung: vps docker <befehl> [optionen]
+
+Befehle:
+  install <host>                  Docker CE installieren
+  list                            Docker-Übersicht aller VPS
+  list <host>                     Container auf einem Host anzeigen
+  start <host> <container>        Container starten
+  stop <host> <container>         Container stoppen
+  help                            Diese Hilfe anzeigen
+
+Beispiele:
+  vps docker install webserver        # Docker installieren
+  vps docker list                     # Übersicht aller VPS
+  vps docker list webserver           # Container auflisten
+  vps docker stop webserver myapp     # Container stoppen
+  vps docker start webserver myapp    # Container starten
+EOF
+}
+
+cmd_docker_install() {
     local target="$1"
 
     if [[ -z "$target" ]]; then
-        print_error "Bitte Host angeben: vps docker <host>"
+        print_error "Bitte Host angeben: vps docker install <host>"
         exit 1
     fi
 
@@ -398,6 +449,100 @@ DOCKER_SCRIPT
 
     print_success "Docker-Installation auf $target abgeschlossen."
     print_warning "Hinweis: Bei der ersten Nutzung muss sich der User neu einloggen (docker-Gruppe)."
+}
+
+cmd_docker_list() {
+    local target="$1"
+
+    # Ohne Host: Übersicht aller VPS
+    if [[ -z "$target" ]]; then
+        cmd_docker_list_all
+        return
+    fi
+
+    local ip=$(resolve_host "$target")
+    local hostname="$target"
+
+    echo "Docker-Container auf $hostname ($ip):"
+    echo ""
+
+    # Prüfe ob Docker installiert ist
+    if ! ssh_exec "$ip" "command -v docker" &>/dev/null; then
+        print_error "Docker ist nicht installiert auf $hostname. Führe zuerst 'vps docker install $hostname' aus."
+        exit 1
+    fi
+
+    # Alle Container anzeigen (laufende und gestoppte)
+    ssh_exec "$ip" "sudo docker ps -a --format 'table {{.Names}}\t{{.Image}}\t{{.Status}}\t{{.Ports}}'"
+}
+
+cmd_docker_list_all() {
+    check_hosts_file
+
+    echo "Docker-Übersicht aller VPS:"
+    echo ""
+    printf "%-15s %-15s %-10s %-10s %s\n" "VPS" "IP" "DOCKER" "LAUFEND" "GESTOPPT"
+    printf "%-15s %-15s %-10s %-10s %s\n" "---------------" "---------------" "----------" "----------" "----------"
+
+    local pids=()
+    local temp_dir=$(mktemp -d)
+
+    while read -r ip hostname; do
+        [[ -z "$ip" ]] && continue
+        (
+            if ssh_exec "$ip" "command -v docker" &>/dev/null; then
+                local running stopped
+                running=$(ssh_exec "$ip" "sudo docker ps -q 2>/dev/null | wc -l" 2>/dev/null || echo "?")
+                stopped=$(ssh_exec "$ip" "sudo docker ps -aq --filter status=exited 2>/dev/null | wc -l" 2>/dev/null || echo "?")
+                printf "%-15s %-15s %-10s %-10s %s\n" "$hostname" "$ip" "ja" "$running" "$stopped"
+            else
+                printf "%-15s %-15s %-10s %-10s %s\n" "$hostname" "$ip" "nein" "-" "-"
+            fi
+        ) > "$temp_dir/$ip" &
+        pids+=($!)
+    done < <(get_hosts)
+
+    for pid in "${pids[@]}"; do
+        wait "$pid"
+    done
+
+    # Ausgabe in IP-Reihenfolge
+    while read -r ip hostname; do
+        [[ -z "$ip" ]] && continue
+        [[ -f "$temp_dir/$ip" ]] && cat "$temp_dir/$ip"
+    done < <(get_hosts)
+
+    rm -rf "$temp_dir"
+}
+
+cmd_docker_start() {
+    local target="$1"
+    local container="$2"
+
+    if [[ -z "$target" ]] || [[ -z "$container" ]]; then
+        print_error "Verwendung: vps docker start <host> <container>"
+        exit 1
+    fi
+
+    local ip=$(resolve_host "$target")
+    echo "Starte Container '$container' auf $target ($ip)..."
+    ssh_exec "$ip" "sudo docker start $container"
+    print_success "Container '$container' gestartet."
+}
+
+cmd_docker_stop() {
+    local target="$1"
+    local container="$2"
+
+    if [[ -z "$target" ]] || [[ -z "$container" ]]; then
+        print_error "Verwendung: vps docker stop <host> <container>"
+        exit 1
+    fi
+
+    local ip=$(resolve_host "$target")
+    echo "Stoppe Container '$container' auf $target ($ip)..."
+    ssh_exec "$ip" "sudo docker stop $container"
+    print_success "Container '$container' gestoppt."
 }
 
 # === TRAEFIK ===
@@ -1071,7 +1216,11 @@ Befehle:
   ssh <host>                        Öffnet interaktive SSH-Session
 
 Docker & Traefik:
-  docker <host>                     Installiert Docker auf einem Host
+  docker install <host>             Installiert Docker auf einem Host
+  docker list [host]                Zeigt Docker-Übersicht oder Container
+  docker start <host> <container>   Startet einen Container
+  docker stop <host> <container>    Stoppt einen Container
+  docker help                       Zeigt Docker-Hilfe
   traefik setup <email>             Richtet Traefik auf dem Proxy ein
   traefik status                    Zeigt Traefik-Status
   traefik logs [lines]              Zeigt Traefik-Logs
@@ -1095,7 +1244,9 @@ Beispiele:
   vps scan                          # Netzwerk scannen
   vps list                          # Alle VPS anzeigen
   vps status webserver              # Status eines VPS
-  vps docker proxy                  # Docker auf Proxy installieren
+  vps docker install proxy           # Docker auf Proxy installieren
+  vps docker list webserver          # Container auf VPS anzeigen
+  vps docker stop webserver myapp    # Container stoppen
   vps traefik setup admin@mail.de   # Traefik einrichten
   vps route add app.de webserver 80 # Route hinzufügen
   vps route list                    # Routes anzeigen
