@@ -1,0 +1,59 @@
+services:
+  # Schema-Dateien aus dem Guacamole-Image in ein Volume kopieren
+  # Docker "volume population" kopiert die Dateien automatisch beim ersten Start
+  init-db:
+    image: guacamole/guacamole
+    container_name: guacamole-init
+    restart: "no"
+    entrypoint: ["/bin/sh", "-c", "echo 'Schema-Dateien in Volume geladen'"]
+    volumes:
+      - initdb:/opt/guacamole/extensions/guacamole-auth-jdbc/postgresql/schema
+
+  # PostgreSQL liest die Schema-Dateien aus dem Volume bei der Erstinitialisierung
+  postgres:
+    image: postgres:16
+    container_name: guacamole-db
+    restart: unless-stopped
+    depends_on:
+      init-db:
+        condition: service_completed_successfully
+    environment:
+      POSTGRES_DB: guacamole
+      POSTGRES_USER: guacamole
+      POSTGRES_PASSWORD: {{DB_PASSWORD}}
+    volumes:
+      - ./db-data:/var/lib/postgresql/data
+      - initdb:/docker-entrypoint-initdb.d:ro
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U guacamole"]
+      interval: 5s
+      timeout: 5s
+      retries: 10
+
+  guacd:
+    image: guacamole/guacd
+    container_name: guacamole-guacd
+    restart: unless-stopped
+
+  guacamole:
+    image: guacamole/guacamole
+    container_name: guacamole-web
+    restart: unless-stopped
+    depends_on:
+      postgres:
+        condition: service_healthy
+      guacd:
+        condition: service_started
+    environment:
+      GUACD_HOSTNAME: guacd
+      POSTGRESQL_HOSTNAME: postgres
+      POSTGRESQL_DATABASE: guacamole
+      POSTGRESQL_USER: guacamole
+      POSTGRESQL_PASSWORD: {{DB_PASSWORD}}
+      POSTGRESQL_AUTO_CREATE_ACCOUNTS: "true"
+      WEBAPP_CONTEXT: ROOT
+    ports:
+      - "8080:8080"
+
+volumes:
+  initdb:
