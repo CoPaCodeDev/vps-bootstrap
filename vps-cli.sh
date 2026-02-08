@@ -370,13 +370,15 @@ Verwendung: vps docker <befehl> [optionen]
 
 Befehle:
   install <host>                  Docker CE installieren
-  list <host>                     Laufende Container anzeigen
+  list                            Docker-Übersicht aller VPS
+  list <host>                     Container auf einem Host anzeigen
   start <host> <container>        Container starten
   stop <host> <container>         Container stoppen
   help                            Diese Hilfe anzeigen
 
 Beispiele:
   vps docker install webserver        # Docker installieren
+  vps docker list                     # Übersicht aller VPS
   vps docker list webserver           # Container auflisten
   vps docker stop webserver myapp     # Container stoppen
   vps docker start webserver myapp    # Container starten
@@ -452,9 +454,10 @@ DOCKER_SCRIPT
 cmd_docker_list() {
     local target="$1"
 
+    # Ohne Host: Übersicht aller VPS
     if [[ -z "$target" ]]; then
-        print_error "Bitte Host angeben: vps docker list <host>"
-        exit 1
+        cmd_docker_list_all
+        return
     fi
 
     local ip=$(resolve_host "$target")
@@ -471,6 +474,45 @@ cmd_docker_list() {
 
     # Alle Container anzeigen (laufende und gestoppte)
     ssh_exec "$ip" "sudo docker ps -a --format 'table {{.Names}}\t{{.Image}}\t{{.Status}}\t{{.Ports}}'"
+}
+
+cmd_docker_list_all() {
+    check_hosts_file
+
+    echo "Docker-Übersicht aller VPS:"
+    echo ""
+    printf "%-15s %-15s %-10s %-10s %s\n" "VPS" "IP" "DOCKER" "LAUFEND" "GESTOPPT"
+    printf "%-15s %-15s %-10s %-10s %s\n" "---------------" "---------------" "----------" "----------" "----------"
+
+    local pids=()
+    local temp_dir=$(mktemp -d)
+
+    while read -r ip hostname; do
+        [[ -z "$ip" ]] && continue
+        (
+            if ssh_exec "$ip" "command -v docker" &>/dev/null; then
+                local running stopped
+                running=$(ssh_exec "$ip" "sudo docker ps -q 2>/dev/null | wc -l" 2>/dev/null || echo "?")
+                stopped=$(ssh_exec "$ip" "sudo docker ps -aq --filter status=exited 2>/dev/null | wc -l" 2>/dev/null || echo "?")
+                printf "%-15s %-15s %-10s %-10s %s\n" "$hostname" "$ip" "ja" "$running" "$stopped"
+            else
+                printf "%-15s %-15s %-10s %-10s %s\n" "$hostname" "$ip" "nein" "-" "-"
+            fi
+        ) > "$temp_dir/$ip" &
+        pids+=($!)
+    done < <(get_hosts)
+
+    for pid in "${pids[@]}"; do
+        wait "$pid"
+    done
+
+    # Ausgabe in IP-Reihenfolge
+    while read -r ip hostname; do
+        [[ -z "$ip" ]] && continue
+        [[ -f "$temp_dir/$ip" ]] && cat "$temp_dir/$ip"
+    done < <(get_hosts)
+
+    rm -rf "$temp_dir"
 }
 
 cmd_docker_start() {
@@ -1175,7 +1217,7 @@ Befehle:
 
 Docker & Traefik:
   docker install <host>             Installiert Docker auf einem Host
-  docker list <host>                Zeigt Container auf einem Host
+  docker list [host]                Zeigt Docker-Übersicht oder Container
   docker start <host> <container>   Startet einen Container
   docker stop <host> <container>    Stoppt einen Container
   docker help                       Zeigt Docker-Hilfe
