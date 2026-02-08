@@ -1,16 +1,15 @@
 services:
-  # Schritt 1: SQL-Schema aus dem Guacamole-Image generieren
+  # Schema-Dateien aus dem Guacamole-Image in ein Volume kopieren
+  # Docker "volume population" kopiert die Dateien automatisch beim ersten Start
   init-db:
     image: guacamole/guacamole
     container_name: guacamole-init
-    entrypoint: /bin/sh
-    command:
-      - -c
-      - /opt/guacamole/bin/initdb.sh --postgresql > /initdb/00-schema.sql
+    restart: "no"
+    entrypoint: ["/bin/sh", "-c", "echo 'Schema-Dateien in Volume geladen'"]
     volumes:
-      - initdb:/initdb
+      - initdb:/opt/guacamole/extensions/guacamole-auth-jdbc/postgresql/schema
 
-  # Schritt 2: PostgreSQL startet und führt Schema aus initdb.d aus
+  # PostgreSQL liest die Schema-Dateien aus dem Volume bei der Erstinitialisierung
   postgres:
     image: postgres:16
     container_name: guacamole-db
