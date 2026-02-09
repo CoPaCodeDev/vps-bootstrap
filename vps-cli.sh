@@ -888,7 +888,10 @@ deploy_collect_vars() {
         fi
 
         local value=""
-        if [[ "$var_type" == "secret" ]]; then
+        if [[ "$var_type" == "generate" ]]; then
+            value=$(openssl rand -base64 32 | tr -d '/+=' | head -c 32)
+            echo "${var_desc}: (automatisch generiert)"
+        elif [[ "$var_type" == "secret" ]]; then
             while [[ -z "$value" ]]; do
                 read -s -p "${var_desc}: " value
                 echo ""
@@ -1107,16 +1110,16 @@ cmd_deploy_app() {
     echo "  Verzeichnis: $deploy_dir"
     for key in "${!collected_vars[@]}"; do
         [[ "$key" == "HOST_IP" ]] && continue
-        # Secrets nicht anzeigen
-        local is_secret=false
+        # Typ der Variable ermitteln
+        local var_type=""
         for var_def in "${TEMPLATE_VARS[@]}"; do
-            IFS='|' read -r vn vd vdf vt <<< "$var_def"
-            if [[ "$vn" == "$key" && "$vt" == "secret" ]]; then
-                is_secret=true
+            IFS='|' read -r vn vd vdf vt _vc <<< "$var_def"
+            if [[ "$vn" == "$key" ]]; then
+                var_type="$vt"
                 break
             fi
         done
-        if [[ "$is_secret" == "true" ]]; then
+        if [[ "$var_type" == "secret" ]]; then
             echo "  ${key}: ********"
         else
             echo "  ${key}: ${collected_vars[$key]}"
@@ -1188,6 +1191,29 @@ cmd_deploy_app() {
                 echo "Erreichbar unter: https://${collected_vars[$route_var]}"
             fi
         done
+    fi
+
+    # Generierte Zugangsdaten einmalig anzeigen
+    local has_generated=false
+    for var_def in "${TEMPLATE_VARS[@]}"; do
+        IFS='|' read -r vn vd vdf vt _vc <<< "$var_def"
+        if [[ "$vt" == "generate" && -n "${collected_vars[$vn]}" ]]; then
+            has_generated=true
+            break
+        fi
+    done
+    if [[ "$has_generated" == "true" ]]; then
+        echo ""
+        echo "========================================="
+        echo "  GENERIERTE ZUGANGSDATEN (jetzt sichern!)"
+        echo "========================================="
+        for var_def in "${TEMPLATE_VARS[@]}"; do
+            IFS='|' read -r vn vd vdf vt _vc <<< "$var_def"
+            if [[ "$vt" == "generate" && -n "${collected_vars[$vn]}" ]]; then
+                echo "  ${vd}: ${collected_vars[$vn]}"
+            fi
+        done
+        echo "========================================="
     fi
 }
 
