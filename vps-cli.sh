@@ -854,6 +854,8 @@ deploy_load_template() {
     TEMPLATE_REQUIRES_ROUTE=false
     TEMPLATE_ROUTE_PORT=""
     TEMPLATE_VARS=()
+    TEMPLATE_COMPOSE_PROFILES=()
+    TEMPLATE_ADDITIONAL_ROUTES=()
 
     source "$conf"
 }
@@ -865,10 +867,31 @@ deploy_collect_vars() {
     local vars=("$@")
 
     for var_def in "${vars[@]}"; do
-        IFS='|' read -r var_name var_desc var_default var_type <<< "$var_def"
+        IFS='|' read -r var_name var_desc var_default var_type var_condition <<< "$var_def"
+
+        # Bedingte Variable: nur abfragen wenn Bedingung erfüllt
+        # Format: VARIABLE=wert1,wert2
+        if [[ -n "$var_condition" ]]; then
+            local cond_var="${var_condition%%=*}"
+            local cond_vals="${var_condition#*=}"
+            local cond_match=false
+            IFS=',' read -ra cond_list <<< "$cond_vals"
+            for cv in "${cond_list[@]}"; do
+                if [[ "${result_vars[$cond_var]}" == "$cv" ]]; then
+                    cond_match=true
+                    break
+                fi
+            done
+            if [[ "$cond_match" != "true" ]]; then
+                continue
+            fi
+        fi
 
         local value=""
-        if [[ "$var_type" == "secret" ]]; then
+        if [[ "$var_type" == "generate" ]]; then
+            value=$(openssl rand -base64 32 | tr -d '/+=' | head -c 32)
+            echo "${var_desc}: (automatisch generiert)"
+        elif [[ "$var_type" == "secret" ]]; then
             while [[ -z "$value" ]]; do
                 read -s -p "${var_desc}: " value
                 echo ""
@@ -1087,16 +1110,16 @@ cmd_deploy_app() {
     echo "  Verzeichnis: $deploy_dir"
     for key in "${!collected_vars[@]}"; do
         [[ "$key" == "HOST_IP" ]] && continue
-        # Secrets nicht anzeigen
-        local is_secret=false
+        # Typ der Variable ermitteln
+        local var_type=""
         for var_def in "${TEMPLATE_VARS[@]}"; do
-            IFS='|' read -r vn vd vdf vt <<< "$var_def"
-            if [[ "$vn" == "$key" && "$vt" == "secret" ]]; then
-                is_secret=true
+            IFS='|' read -r vn vd vdf vt _vc <<< "$var_def"
+            if [[ "$vn" == "$key" ]]; then
+                var_type="$vt"
                 break
             fi
         done
-        if [[ "$is_secret" == "true" ]]; then
+        if [[ "$var_type" == "secret" ]]; then
             echo "  ${key}: ********"
         else
             echo "  ${key}: ${collected_vars[$key]}"
@@ -1119,9 +1142,24 @@ cmd_deploy_app() {
     done
     deploy_files "$ip" "$template_dir" "$deploy_dir" "${var_args[@]}"
 
+    # Compose Profiles ermitteln
+    local profiles=""
+    if [[ ${#TEMPLATE_COMPOSE_PROFILES[@]} -gt 0 ]]; then
+        local -A active_profiles
+        for profile_def in "${TEMPLATE_COMPOSE_PROFILES[@]}"; do
+            IFS='|' read -r prof_var prof_val prof_name <<< "$profile_def"
+            if [[ "${collected_vars[$prof_var]}" == "$prof_val" ]]; then
+                active_profiles["$prof_name"]=1
+            fi
+        done
+        for prof in "${!active_profiles[@]}"; do
+            profiles+=" --profile ${prof}"
+        done
+    fi
+
     # Container starten
     echo "Starte Container..."
-    ssh_exec "$ip" "cd ${deploy_dir} && docker compose up -d"
+    ssh_exec "$ip" "cd ${deploy_dir} && docker compose${profiles} up -d"
 
     # Route anlegen
     if [[ "$TEMPLATE_REQUIRES_ROUTE" == "true" && -n "${collected_vars[DOMAIN]}" ]]; then
@@ -1129,10 +1167,53 @@ cmd_deploy_app() {
         cmd_route_add "${collected_vars[DOMAIN]}" "$target" "${TEMPLATE_ROUTE_PORT}"
     fi
 
+    # Zusätzliche Routen anlegen
+    if [[ ${#TEMPLATE_ADDITIONAL_ROUTES[@]} -gt 0 ]]; then
+        for route_def in "${TEMPLATE_ADDITIONAL_ROUTES[@]}"; do
+            IFS='|' read -r route_var route_port <<< "$route_def"
+            if [[ -n "${collected_vars[$route_var]}" ]]; then
+                echo "Lege Traefik-Route an (${collected_vars[$route_var]})..."
+                cmd_route_add "${collected_vars[$route_var]}" "$target" "$route_port"
+            fi
+        done
+    fi
+
     echo ""
     print_success "${TEMPLATE_NAME:-$template} erfolgreich deployed auf ${target}!"
     if [[ -n "${collected_vars[DOMAIN]}" ]]; then
         echo "Erreichbar unter: https://${collected_vars[DOMAIN]}"
+    fi
+    # Zusätzliche URLs anzeigen
+    if [[ ${#TEMPLATE_ADDITIONAL_ROUTES[@]} -gt 0 ]]; then
+        for route_def in "${TEMPLATE_ADDITIONAL_ROUTES[@]}"; do
+            IFS='|' read -r route_var route_port <<< "$route_def"
+            if [[ -n "${collected_vars[$route_var]}" ]]; then
+                echo "Erreichbar unter: https://${collected_vars[$route_var]}"
+            fi
+        done
+    fi
+
+    # Generierte Zugangsdaten einmalig anzeigen
+    local has_generated=false
+    for var_def in "${TEMPLATE_VARS[@]}"; do
+        IFS='|' read -r vn vd vdf vt _vc <<< "$var_def"
+        if [[ "$vt" == "generate" && -n "${collected_vars[$vn]}" ]]; then
+            has_generated=true
+            break
+        fi
+    done
+    if [[ "$has_generated" == "true" ]]; then
+        echo ""
+        echo "========================================="
+        echo "  GENERIERTE ZUGANGSDATEN (jetzt sichern!)"
+        echo "========================================="
+        for var_def in "${TEMPLATE_VARS[@]}"; do
+            IFS='|' read -r vn vd vdf vt _vc <<< "$var_def"
+            if [[ "$vt" == "generate" && -n "${collected_vars[$vn]}" ]]; then
+                echo "  ${vd}: ${collected_vars[$vn]}"
+            fi
+        done
+        echo "========================================="
     fi
 }
 
