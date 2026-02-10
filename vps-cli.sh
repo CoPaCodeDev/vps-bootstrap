@@ -2718,7 +2718,7 @@ chmod 600 /root/.ssh/config'"
 set -euo pipefail
 
 # Restic installieren
-if ! command -v restic &>/dev/null; then
+if ! restic version &>/dev/null; then
     # bunzip2 sicherstellen (auf Minimal-Systemen nicht immer vorhanden)
     if ! command -v bunzip2 &>/dev/null; then
         echo "Installiere bzip2..."
@@ -2788,7 +2788,81 @@ SETUP_SCRIPT
     done
 
     # Backup-Script deployen
-    cat "${SCRIPT_DIR}/backup/vps-backup.sh" | host_write "$ip" "/usr/local/bin/vps-backup.sh"
+    host_write "$ip" "/usr/local/bin/vps-backup.sh" << 'BACKUP_SCRIPT'
+#!/bin/bash
+#
+# VPS Backup Script (Restic + Hetzner Storage Box)
+# Wird auf jedem Host nach /usr/local/bin/vps-backup.sh deployed
+#
+set -euo pipefail
+
+ACTION="${1:-backup}"
+
+# Konfiguration laden
+if [[ ! -f /etc/restic/env ]]; then
+    echo "Fehler: /etc/restic/env nicht gefunden. Bitte zuerst 'vps backup setup' ausführen." >&2
+    exit 1
+fi
+source /etc/restic/env
+
+export RESTIC_REPOSITORY
+export RESTIC_PASSWORD_FILE
+
+case "$ACTION" in
+    backup)
+        echo "=== Starte Backup auf $(hostname) ==="
+
+        # Pre-Backup Hooks ausführen (Datenbank-Dumps etc.)
+        if [[ -d /etc/restic/pre-backup.d ]]; then
+            for hook in /etc/restic/pre-backup.d/*.sh; do
+                [[ -x "$hook" ]] || continue
+                echo "--- Führe Hook aus: $(basename "$hook") ---"
+                bash "$hook"
+            done
+        fi
+
+        # Restic Backup (SSH-Verbindung via /root/.ssh/config)
+        restic backup \
+            --verbose \
+            --exclude-file=/etc/restic/excludes \
+            --files-from=/etc/restic/includes \
+            --tag auto \
+            --host "$(hostname)"
+
+        # Cleanup temporäre Dumps
+        rm -rf /tmp/backups/
+
+        echo "=== Backup abgeschlossen ==="
+        ;;
+
+    forget)
+        echo "=== Starte Retention/Prune auf $(hostname) ==="
+        restic forget \
+            --keep-daily 7 \
+            --keep-weekly 4 \
+            --keep-monthly 6 \
+            --keep-yearly 1 \
+            --host "$(hostname)" \
+            --prune
+        echo "=== Prune abgeschlossen ==="
+        ;;
+
+    check)
+        echo "=== Prüfe Repository-Integrität ==="
+        restic check
+        echo "=== Check abgeschlossen ==="
+        ;;
+
+    snapshots)
+        restic snapshots --host "$(hostname)"
+        ;;
+
+    *)
+        echo "Verwendung: vps-backup.sh {backup|forget|check|snapshots}" >&2
+        exit 1
+        ;;
+esac
+BACKUP_SCRIPT
     ssh_exec "$ip" "sudo chmod 755 /usr/local/bin/vps-backup.sh"
 
     # Repository initialisieren (nur wenn noch nicht vorhanden)
@@ -2799,16 +2873,59 @@ SETUP_SCRIPT
     echo "Deploye systemd Units..."
 
     # Backup Service
-    cat "${SCRIPT_DIR}/backup/restic-backup.service" | host_write "$ip" "/etc/systemd/system/restic-backup.service"
+    host_write "$ip" "/etc/systemd/system/restic-backup.service" << 'UNIT'
+[Unit]
+Description=Restic Backup
+After=network-online.target docker.service
+Wants=network-online.target
+
+[Service]
+Type=oneshot
+ExecStart=/usr/local/bin/vps-backup.sh backup
+Nice=10
+IOSchedulingClass=idle
+UNIT
 
     # Backup Timer
-    cat "${SCRIPT_DIR}/backup/restic-backup.timer" | host_write "$ip" "/etc/systemd/system/restic-backup.timer"
+    host_write "$ip" "/etc/systemd/system/restic-backup.timer" << 'UNIT'
+[Unit]
+Description=Tägliches Restic Backup
+
+[Timer]
+OnCalendar=*-*-* 02:00:00
+RandomizedDelaySec=1800
+Persistent=true
+
+[Install]
+WantedBy=timers.target
+UNIT
 
     # Prune Service
-    cat "${SCRIPT_DIR}/backup/restic-prune.service" | host_write "$ip" "/etc/systemd/system/restic-prune.service"
+    host_write "$ip" "/etc/systemd/system/restic-prune.service" << 'UNIT'
+[Unit]
+Description=Restic Retention/Prune
+After=network-online.target
+Wants=network-online.target
+
+[Service]
+Type=oneshot
+ExecStart=/usr/local/bin/vps-backup.sh forget
+Nice=10
+IOSchedulingClass=idle
+UNIT
 
     # Prune Timer
-    cat "${SCRIPT_DIR}/backup/restic-prune.timer" | host_write "$ip" "/etc/systemd/system/restic-prune.timer"
+    host_write "$ip" "/etc/systemd/system/restic-prune.timer" << 'UNIT'
+[Unit]
+Description=Wöchentliches Restic Prune
+
+[Timer]
+OnCalendar=Sun *-*-* 04:00:00
+Persistent=true
+
+[Install]
+WantedBy=timers.target
+UNIT
 
     # Timer aktivieren
     ssh_exec "$ip" "sudo systemctl daemon-reload && sudo systemctl enable --now restic-backup.timer restic-prune.timer"
