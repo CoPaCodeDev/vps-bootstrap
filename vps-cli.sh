@@ -2719,6 +2719,11 @@ set -euo pipefail
 
 # Restic installieren
 if ! command -v restic &>/dev/null; then
+    # bunzip2 sicherstellen (auf Minimal-Systemen nicht immer vorhanden)
+    if ! command -v bunzip2 &>/dev/null; then
+        echo "Installiere bzip2..."
+        sudo apt-get update -qq && sudo apt-get install -y -qq bzip2
+    fi
     echo "Installiere Restic ${RESTIC_VERSION}..."
     curl -sL "${restic_url}" | bunzip2 | sudo tee /usr/local/bin/restic > /dev/null
     sudo chmod 755 /usr/local/bin/restic
