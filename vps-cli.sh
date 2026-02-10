@@ -2127,17 +2127,20 @@ ufw --force enable
     if [[ "$setup_vlan" == "true" ]]; then
         echo "Prüfe CloudVLAN-Interface..."
 
-        local interfaces
-        interfaces=$(netcup_api GET "/api/v1/servers/${server_id}/interfaces")
+        # Live-Info neu laden um aktuelle Interfaces zu prüfen
+        local live_info
+        live_info=$(netcup_api GET "/api/v1/servers/${server_id}?loadServerLiveInfo=true")
 
         local has_vlan_interface
-        has_vlan_interface=$(echo "$interfaces" | jq '[.[] | select(.vlanInterface == true)] | length')
+        has_vlan_interface=$(echo "$live_info" | jq '
+            [.serverLiveInfo.interfaces // [] | .[] | select(.vlanInterface == true)] | length
+        ')
 
         if [[ "$has_vlan_interface" -eq 0 ]]; then
             echo "  Lege CloudVLAN-Interface an..."
             local vlan_response
             vlan_response=$(netcup_api_raw POST "/api/v1/servers/${server_id}/interfaces" \
-                -H "Content-Type: application/merge-patch+json" \
+                -H "Content-Type: application/json" \
                 -d "$(jq -n --argjson vlanId "$vlan_id" '{vlanId: $vlanId, networkDriver: "VIRTIO"}')")
 
             local vlan_http_code
