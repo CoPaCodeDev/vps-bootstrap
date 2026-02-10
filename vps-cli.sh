@@ -1791,10 +1791,32 @@ cmd_netcup_install() {
     public_ip=$(echo "$server_info" | jq -r '.ipv4Addresses[0].ip // "-"')
     server_state=$(echo "$server_info" | jq -r '.serverLiveInfo.state // "-"')
 
+    local server_nickname
+    server_nickname=$(echo "$server_info" | jq -r '.nickname // empty')
+
     echo "Server:     ${server_name} (ID: ${server_id})"
     echo "Hostname:   ${server_hostname}"
+    echo "Nickname:   ${server_nickname:-"-"}"
     echo "Public IP:  ${public_ip}"
     echo "Status:     ${server_state}"
+
+    # Bestehenden Eintrag in /etc/vps-hosts suchen (Nickname oder Hostname)
+    local existing_vlan_ip="" existing_hostname=""
+    if [[ -f "$HOSTS_FILE" ]]; then
+        for lookup in "$server_nickname" "$server_hostname"; do
+            [[ -z "$lookup" || "$lookup" == "-" ]] && continue
+            existing_vlan_ip=$(grep -v '^#' "$HOSTS_FILE" | awk -v h="$lookup" '$2 == h {print $1; exit}')
+            if [[ -n "$existing_vlan_ip" ]]; then
+                existing_hostname="$lookup"
+                break
+            fi
+        done
+    fi
+
+    if [[ -n "$existing_vlan_ip" ]]; then
+        echo ""
+        print_warning "Bestehender Eintrag: ${existing_vlan_ip} ${existing_hostname}"
+    fi
     echo ""
 
     # Schritt 2: Bestätigung
@@ -1878,8 +1900,15 @@ cmd_netcup_install() {
 
     # Schritt 5: Hostname eingeben
     local new_hostname
+    local hostname_default="${existing_hostname:-${server_nickname}}"
+    [[ "$hostname_default" == "-" ]] && hostname_default=""
     while true; do
-        read -p "Hostname: " new_hostname
+        if [[ -n "$hostname_default" ]]; then
+            read -p "Hostname [${hostname_default}]: " new_hostname
+            [[ -z "$new_hostname" ]] && new_hostname="$hostname_default"
+        else
+            read -p "Hostname: " new_hostname
+        fi
         if [[ -z "$new_hostname" ]]; then
             print_error "Hostname darf nicht leer sein."
             continue
@@ -1934,8 +1963,13 @@ cmd_netcup_install() {
     fi
 
     if [[ "$setup_vlan" == "true" ]]; then
-        vlan_ip=$(netcup_next_free_ip)
-        echo "  Nächste freie IP: ${vlan_ip}"
+        if [[ -n "$existing_vlan_ip" ]]; then
+            vlan_ip="$existing_vlan_ip"
+            echo "  Bisherige IP: ${vlan_ip}"
+        else
+            vlan_ip=$(netcup_next_free_ip)
+            echo "  Nächste freie IP: ${vlan_ip}"
+        fi
 
         vlan_id=$(netcup_get_vlan_id)
         if [[ -z "$vlan_id" ]]; then
@@ -2213,19 +2247,28 @@ ufw --force enable
     if [[ "$setup_vlan" == "true" ]]; then
         echo "Trage in /etc/vps-hosts ein..."
 
-        # Prüfen ob IP oder Hostname schon vorhanden
-        local already_exists=false
+        local hosts_updated=false
+
+        # Alten Eintrag entfernen (alte IP oder alter Hostname)
         if [[ -f "$HOSTS_FILE" ]]; then
-            if grep -q "^${vlan_ip} " "$HOSTS_FILE" 2>/dev/null || \
-               grep -q " ${new_hostname}$" "$HOSTS_FILE" 2>/dev/null; then
-                already_exists=true
+            if [[ -n "$existing_vlan_ip" ]]; then
+                proxy_exec "sudo sed -i '/^${existing_vlan_ip} /d' ${HOSTS_FILE}" 2>/dev/null
+                hosts_updated=true
             fi
+            if [[ -n "$existing_hostname" && "$existing_hostname" != "$new_hostname" ]]; then
+                proxy_exec "sudo sed -i '/ ${existing_hostname}\$/d' ${HOSTS_FILE}" 2>/dev/null
+                hosts_updated=true
+            fi
+            # Auch neuen Hostname entfernen falls schon mit anderer IP vorhanden
+            proxy_exec "sudo sed -i '/ ${new_hostname}\$/d' ${HOSTS_FILE}" 2>/dev/null
         fi
 
-        if [[ "$already_exists" == "true" ]]; then
-            print_warning "  IP oder Hostname bereits in ${HOSTS_FILE} vorhanden. Übersprungen."
+        # Neuen Eintrag hinzufügen
+        proxy_exec "echo '${vlan_ip} ${new_hostname}' | sudo tee -a ${HOSTS_FILE}" > /dev/null
+
+        if [[ "$hosts_updated" == "true" ]]; then
+            echo "  ${vlan_ip} ${new_hostname} aktualisiert."
         else
-            proxy_exec "echo '${vlan_ip} ${new_hostname}' | sudo tee -a ${HOSTS_FILE}" > /dev/null
             echo "  ${vlan_ip} ${new_hostname} eingetragen."
         fi
         echo ""
