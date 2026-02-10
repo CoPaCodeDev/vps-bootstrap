@@ -2075,7 +2075,7 @@ ufw --force enable
             diskName: $diskName,
             rootPartitionFullDiskSize: true,
             hostname: $hostname,
-            locale: "de_DE",
+            locale: "de_DE.UTF-8",
             timezone: "Europe/Berlin",
             additionalUserUsername: "master",
             additionalUserPassword: $password,
