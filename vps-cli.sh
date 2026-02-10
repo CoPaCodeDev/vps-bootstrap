@@ -2642,7 +2642,7 @@ cmd_backup_setup() {
 
         echo ""
         echo "Bitte den Public Key auf der Storage Box hinterlegen:"
-        echo "  ssh-copy-id -p 23 -i ${key_file}.pub ${storage_user}@${storage_host}"
+        echo "  ssh-copy-id -s -p 23 -i ${key_file}.pub ${storage_user}@${storage_host}"
         echo ""
         read -rp "Enter drücken wenn der Key hinterlegt wurde..."
     else
