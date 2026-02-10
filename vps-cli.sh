@@ -1344,7 +1344,7 @@ netcup_get_user_id() {
     local decoded
     decoded=$(echo "$payload" | base64 -d 2>/dev/null)
 
-    # Zuerst bekannte Claims mit numerischem Wert durchprobieren
+    # 1. Bekannte Claims mit numerischem Wert durchprobieren
     local user_id
     for claim in userId user_id uid scp_user_id netcup_user_id; do
         user_id=$(echo "$decoded" | jq -r --arg c "$claim" '.[$c] // empty' 2>/dev/null)
@@ -1354,23 +1354,36 @@ netcup_get_user_id() {
         fi
     done
 
-    # Fallback: Alle numerischen Top-Level-Werte durchsuchen
-    user_id=$(echo "$decoded" | jq -r '
-        to_entries |
-        map(select(.value | type == "number" and . > 1000)) |
-        sort_by(.key | test("user|id"; "i") | not) |
-        if length > 0 then .[0].value | tostring else empty end
-    ' 2>/dev/null)
-
+    # 2. preferred_username prüfen (bei Netcup evtl. die numerische Kundennummer)
+    user_id=$(echo "$decoded" | jq -r '.preferred_username // empty' 2>/dev/null)
     if [[ -n "$user_id" && "$user_id" =~ ^[0-9]+$ ]]; then
         echo "$user_id"
         return 0
     fi
 
-    # Nichts gefunden - Debug-Ausgabe
-    print_error "Konnte numerische userId nicht aus dem Token extrahieren."
-    echo "  Verfügbare Claims:" >&2
+    # 3. Keycloak Userinfo-Endpoint als Fallback
+    local userinfo_url="https://www.servercontrolpanel.de/realms/scp/protocol/openid-connect/userinfo"
+    local userinfo
+    userinfo=$(curl -s -H "Authorization: Bearer ${NETCUP_ACCESS_TOKEN}" "$userinfo_url" 2>/dev/null)
+
+    if [[ -n "$userinfo" ]]; then
+        for claim in userId user_id uid preferred_username sub; do
+            user_id=$(echo "$userinfo" | jq -r --arg c "$claim" '.[$c] // empty' 2>/dev/null)
+            if [[ -n "$user_id" && "$user_id" =~ ^[0-9]+$ ]]; then
+                echo "$user_id"
+                return 0
+            fi
+        done
+    fi
+
+    # 4. Nichts gefunden - Debug-Ausgabe
+    print_error "Konnte numerische userId nicht ermitteln."
+    echo "  JWT-Claims:" >&2
     echo "$decoded" | jq -r 'to_entries[] | "    \(.key) = \(.value)"' 2>/dev/null >&2
+    if [[ -n "$userinfo" ]]; then
+        echo "  Userinfo-Claims:" >&2
+        echo "$userinfo" | jq -r 'to_entries[] | "    \(.key) = \(.value)"' 2>/dev/null >&2
+    fi
     exit 1
 }
 
@@ -1415,40 +1428,35 @@ netcup_poll_task() {
     return 1
 }
 
-# Ermittelt die VLAN-ID des Benutzers
+# Ermittelt die VLAN-ID aus bestehenden Server-Interfaces
 netcup_get_vlan_id() {
-    local user_id="$1"
+    echo "  Suche VLAN-ID in bestehenden Servern..." >&2
 
-    local response
-    response=$(netcup_api GET "/api/v1/users/${user_id}/vlans")
+    local servers
+    servers=$(netcup_api GET "/api/v1/servers")
 
-    local count
-    count=$(echo "$response" | jq 'length')
+    local server_ids
+    server_ids=$(echo "$servers" | jq -r '.[].id')
 
-    if [[ "$count" -eq 0 ]]; then
-        print_error "Kein CloudVLAN gefunden. Bitte zuerst ein VLAN im SCP anlegen."
-        return 1
-    fi
+    for sid in $server_ids; do
+        local info
+        info=$(netcup_api GET "/api/v1/servers/${sid}?loadServerLiveInfo=true")
 
-    if [[ "$count" -eq 1 ]]; then
-        echo "$response" | jq -r '.[0].id'
-        return 0
-    fi
+        local vlan_id
+        vlan_id=$(echo "$info" | jq -r '
+            .serverLiveInfo.interfaces // [] |
+            map(select(.vlanInterface == true)) |
+            if length > 0 then .[0].vlanId | tostring else empty end
+        ')
 
-    # Mehrere VLANs: Benutzer wählen lassen
-    echo "Mehrere CloudVLANs gefunden:" >&2
-    echo "" >&2
-    local i=1
-    echo "$response" | jq -r '.[] | "\(.id)\t\(.name // "-")"' | while IFS=$'\t' read -r vid vname; do
-        echo "  $i) VLAN $vid ($vname)" >&2
-        ((++i))
+        if [[ -n "$vlan_id" && "$vlan_id" != "null" && "$vlan_id" != "0" ]]; then
+            echo "$vlan_id"
+            return 0
+        fi
     done
 
-    local choice
-    read -p "Auswahl [1]: " choice >&2
-    [[ -z "$choice" ]] && choice=1
-
-    echo "$response" | jq -r ".[$((choice - 1))].id"
+    print_error "Kein CloudVLAN gefunden. Kein bestehender Server hat ein VLAN-Interface."
+    return 1
 }
 
 # Ermittelt die nächste freie CloudVLAN-IP aus /etc/vps-hosts
@@ -1943,10 +1951,7 @@ cmd_netcup_install() {
         vlan_ip=$(netcup_next_free_ip)
         echo "  Nächste freie IP: ${vlan_ip}"
 
-        local user_id
-        user_id=$(netcup_get_user_id)
-
-        vlan_id=$(netcup_get_vlan_id "$user_id")
+        vlan_id=$(netcup_get_vlan_id)
         if [[ -z "$vlan_id" ]]; then
             exit 1
         fi
@@ -1957,9 +1962,7 @@ cmd_netcup_install() {
     # Schritt 8: SSH-Key sicherstellen
     echo "Prüfe SSH-Key..."
     local user_id
-    if [[ -z "${user_id:-}" ]]; then
-        user_id=$(netcup_get_user_id)
-    fi
+    user_id=$(netcup_get_user_id)
 
     local proxy_pubkey
     proxy_pubkey=$(proxy_exec "cat /home/master/.ssh/id_ed25519.pub")
