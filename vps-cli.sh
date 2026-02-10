@@ -2099,6 +2099,12 @@ ufw --force enable
         local msg
         msg=$(echo "$install_body_response" | jq -r '.message // empty' 2>/dev/null)
         print_error "Installation fehlgeschlagen (HTTP ${install_http_code}): ${msg:-$install_body_response}"
+        # Feld-Validierungsfehler anzeigen (422)
+        local field_errors
+        field_errors=$(echo "$install_body_response" | jq -r '.errors[]? | "  \(.field): \(.message)"' 2>/dev/null)
+        if [[ -n "$field_errors" ]]; then
+            echo "$field_errors" >&2
+        fi
         exit 1
     fi
 
