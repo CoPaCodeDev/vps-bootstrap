@@ -26,6 +26,11 @@ NETCUP_DEVICE_URL="https://www.servercontrolpanel.de/realms/scp/protocol/openid-
 NETCUP_REVOKE_URL="https://www.servercontrolpanel.de/realms/scp/protocol/openid-connect/revoke"
 NETCUP_CLIENT_ID="scp"
 
+# Backup Konfiguration
+BACKUP_CONFIG="${HOME}/.config/vps-cli/backup"
+RESTIC_VERSION="0.17.3"
+SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
+
 # Farben für Ausgabe
 RED='\033[0;31m'
 GREEN='\033[0;32m'
@@ -2450,6 +2455,668 @@ cmd_netcup() {
     esac
 }
 
+# === BACKUP ===
+
+# Stellt sicher, dass die Backup-Konfiguration existiert
+backup_ensure_config() {
+    local config_dir
+    config_dir="$(dirname "$BACKUP_CONFIG")"
+    if [[ ! -d "$config_dir" ]]; then
+        mkdir -p "$config_dir"
+        chmod 700 "$config_dir"
+    fi
+}
+
+# Lädt Backup-Konfiguration
+backup_load_config() {
+    if [[ ! -f "$BACKUP_CONFIG" ]]; then
+        return 1
+    fi
+    source "$BACKUP_CONFIG"
+}
+
+# Speichert Backup-Konfiguration
+backup_save_config() {
+    local storage_host="$1"
+    local storage_user="$2"
+    local repo_password="$3"
+    backup_ensure_config
+    cat > "$BACKUP_CONFIG" << EOF
+STORAGE_HOST=${storage_host}
+STORAGE_USER=${storage_user}
+REPO_PASSWORD=${repo_password}
+EOF
+    chmod 600 "$BACKUP_CONFIG"
+}
+
+# Ermittelt Restic-Download-URL für die aktuelle Architektur
+backup_restic_url() {
+    echo "https://github.com/restic/restic/releases/download/v${RESTIC_VERSION}/restic_${RESTIC_VERSION}_linux_amd64.bz2"
+}
+
+# Erkennt Dienste auf einem Host und gibt passende Pre-Backup Hooks zurück
+backup_detect_services() {
+    local ip="$1"
+    local services=""
+
+    # Paperless-ngx
+    if ssh_exec "$ip" "test -f /opt/paperless-ngx/docker-compose.yml" 2>/dev/null; then
+        services="${services} paperless"
+    fi
+
+    # Guacamole
+    if ssh_exec "$ip" "test -f /opt/guacamole/docker-compose.yml" 2>/dev/null; then
+        services="${services} guacamole"
+    fi
+
+    # Uptime Kuma
+    if ssh_exec "$ip" "test -f /opt/uptime-kuma/docker-compose.yml" 2>/dev/null; then
+        services="${services} uptime-kuma"
+    fi
+
+    echo "$services"
+}
+
+# Prüft ob ein Host der Proxy ist
+backup_is_proxy() {
+    local ip="$1"
+    [[ "$ip" == "$PROXY_IP" ]]
+}
+
+# Generiert die includes-Datei für einen Host
+backup_generate_includes() {
+    local ip="$1"
+    local services="$2"
+
+    if backup_is_proxy "$ip"; then
+        cat << 'INCLUDES'
+/opt/traefik/
+/etc/vps-hosts
+/home/master/.ssh/
+/home/master/.config/vps-cli/
+/opt/vps/
+/etc/restic/
+INCLUDES
+    else
+        cat << 'INCLUDES'
+/opt/
+/etc/restic/
+/home/master/.ssh/
+/tmp/backups/
+INCLUDES
+    fi
+}
+
+# Generiert Pre-Backup Hook für Paperless
+backup_hook_paperless() {
+    cat << 'HOOK'
+#!/bin/bash
+set -euo pipefail
+mkdir -p /tmp/backups
+echo "Dumpe Paperless-ngx Datenbank..."
+docker exec paperless-ngx-db pg_dumpall -U paperless > /tmp/backups/paperless-db.sql
+echo "Paperless-ngx Dump abgeschlossen."
+HOOK
+}
+
+# Generiert Pre-Backup Hook für Guacamole
+backup_hook_guacamole() {
+    cat << 'HOOK'
+#!/bin/bash
+set -euo pipefail
+mkdir -p /tmp/backups
+echo "Dumpe Guacamole Datenbank..."
+docker exec guacamole-db pg_dumpall -U guacamole > /tmp/backups/guacamole-db.sql
+echo "Guacamole Dump abgeschlossen."
+HOOK
+}
+
+# Generiert Pre-Backup Hook für Uptime Kuma
+backup_hook_uptime_kuma() {
+    cat << 'HOOK'
+#!/bin/bash
+set -euo pipefail
+mkdir -p /tmp/backups
+echo "Sichere Uptime Kuma Datenbank..."
+sqlite3 /opt/uptime-kuma/data/kuma.db ".backup /tmp/backups/kuma.db"
+echo "Uptime Kuma Backup abgeschlossen."
+HOOK
+}
+
+cmd_backup_setup() {
+    local target="${1:-}"
+
+    if [[ -z "$target" ]]; then
+        print_error "Bitte Host angeben: vps backup setup <host|all>"
+        exit 1
+    fi
+
+    # Konfiguration laden oder abfragen
+    if ! backup_load_config 2>/dev/null; then
+        echo ""
+        echo "=== Hetzner Storage Box Konfiguration ==="
+        echo "Diese Daten werden einmalig abgefragt und gespeichert."
+        echo ""
+
+        read -rp "Storage Box Hostname (z.B. uXXXXXX.your-storagebox.de): " storage_host
+        read -rp "Storage Box Benutzername (z.B. uXXXXXX): " storage_user
+
+        echo ""
+        echo "Repository-Passwort:"
+        echo "  1) Automatisch generieren (empfohlen)"
+        echo "  2) Manuell eingeben"
+        read -rp "Auswahl [1]: " pw_choice
+        pw_choice="${pw_choice:-1}"
+
+        if [[ "$pw_choice" == "1" ]]; then
+            repo_password=$(openssl rand -base64 32)
+            echo ""
+            print_warning "Generiertes Passwort (bitte sicher aufbewahren!):"
+            echo "  $repo_password"
+            echo ""
+        else
+            read -rsp "Repository-Passwort: " repo_password
+            echo ""
+            read -rsp "Passwort bestätigen: " repo_password2
+            echo ""
+            if [[ "$repo_password" != "$repo_password2" ]]; then
+                print_error "Passwörter stimmen nicht überein."
+                exit 1
+            fi
+        fi
+
+        backup_save_config "$storage_host" "$storage_user" "$repo_password"
+        print_success "Konfiguration gespeichert in ${BACKUP_CONFIG}"
+
+        # SSH-Key für Storage Box generieren
+        echo ""
+        echo "=== SSH-Key für Storage Box ==="
+        local key_file="${HOME}/.ssh/backup_storagebox"
+        if [[ ! -f "$key_file" ]]; then
+            echo "Generiere SSH-Key für Storage Box..."
+            ssh-keygen -t ed25519 -f "$key_file" -N "" -C "vps-backup@$(hostname)"
+            print_success "SSH-Key generiert: ${key_file}"
+        else
+            print_warning "SSH-Key existiert bereits: ${key_file}"
+        fi
+
+        echo ""
+        echo "Bitte den Public Key auf der Storage Box hinterlegen:"
+        echo "  ssh-copy-id -p 23 -i ${key_file}.pub ${storage_user}@${storage_host}"
+        echo ""
+        read -rp "Enter drücken wenn der Key hinterlegt wurde..."
+    else
+        echo "Backup-Konfiguration geladen."
+    fi
+
+    # Setup auf Host(s) ausführen
+    if [[ "$target" == "all" ]]; then
+        # Proxy zuerst (initialisiert das Repository)
+        echo ""
+        echo "=== Setup auf Proxy ==="
+        _backup_setup_host "$PROXY_IP" "proxy"
+
+        # Dann alle VPS
+        while read -r ip hostname; do
+            echo ""
+            echo "=== Setup auf $hostname ($ip) ==="
+            _backup_setup_host "$ip" "$hostname"
+        done < <(get_hosts)
+    else
+        local ip=$(resolve_host "$target")
+        _backup_setup_host "$ip" "$target"
+    fi
+}
+
+# Internes: Setup auf einem einzelnen Host
+_backup_setup_host() {
+    local ip="$1"
+    local name="$2"
+
+    backup_load_config
+
+    local restic_url
+    restic_url=$(backup_restic_url)
+
+    # Dienste erkennen
+    echo "Erkenne Dienste auf ${name}..."
+    local services
+    services=$(backup_detect_services "$ip")
+
+    if [[ -n "$services" ]]; then
+        echo "  Erkannte Dienste:${services}"
+    else
+        echo "  Keine speziellen Dienste erkannt."
+    fi
+
+    # Includes generieren
+    local includes
+    includes=$(backup_generate_includes "$ip" "$services")
+
+    # SSH-Key auf den Host kopieren (für Storage Box Zugriff)
+    local key_file="${HOME}/.ssh/backup_storagebox"
+    echo "Kopiere SSH-Key auf ${name}..."
+    ssh $SSH_OPTS "${SSH_USER}@${ip}" "sudo mkdir -p /root/.ssh && sudo chmod 700 /root/.ssh" 2>/dev/null || true
+
+    # Key-Dateien übertragen
+    cat "$key_file" | ssh $SSH_OPTS "${SSH_USER}@${ip}" "sudo tee /root/.ssh/backup_storagebox > /dev/null && sudo chmod 600 /root/.ssh/backup_storagebox"
+    cat "${key_file}.pub" | ssh $SSH_OPTS "${SSH_USER}@${ip}" "sudo tee /root/.ssh/backup_storagebox.pub > /dev/null"
+
+    # SSH-Config für Storage Box Port 23
+    ssh $SSH_OPTS "${SSH_USER}@${ip}" "sudo bash -c 'grep -q \"Host ${STORAGE_HOST}\" /root/.ssh/config 2>/dev/null || cat >> /root/.ssh/config << SSHCONF
+
+Host ${STORAGE_HOST}
+    Port 23
+    IdentityFile /root/.ssh/backup_storagebox
+    StrictHostKeyChecking accept-new
+SSHCONF
+chmod 600 /root/.ssh/config'"
+
+    # Restic installieren + konfigurieren via SSH
+    ssh_exec_stdin "$ip" << SETUP_SCRIPT
+set -euo pipefail
+
+# Restic installieren
+if ! command -v restic &>/dev/null; then
+    echo "Installiere Restic ${RESTIC_VERSION}..."
+    curl -sL "${restic_url}" | bunzip2 | sudo tee /usr/local/bin/restic > /dev/null
+    sudo chmod 755 /usr/local/bin/restic
+    echo "Restic installiert: \$(restic version)"
+else
+    echo "Restic bereits installiert: \$(restic version)"
+fi
+
+# Konfigurationsverzeichnis anlegen
+sudo mkdir -p /etc/restic/pre-backup.d
+
+# Env-Datei
+sudo tee /etc/restic/env > /dev/null << ENVFILE
+RESTIC_REPOSITORY="sftp:${STORAGE_USER}@${STORAGE_HOST}:/restic-repo"
+RESTIC_PASSWORD_FILE="/etc/restic/password"
+ENVFILE
+sudo chmod 600 /etc/restic/env
+
+# Passwort-Datei
+echo '${REPO_PASSWORD}' | sudo tee /etc/restic/password > /dev/null
+sudo chmod 600 /etc/restic/password
+
+# Includes
+sudo tee /etc/restic/includes > /dev/null << 'INCFILE'
+${includes}
+INCFILE
+
+# Excludes
+sudo tee /etc/restic/excludes > /dev/null << 'EXCLFILE'
+/proc
+/sys
+/dev
+/run
+/tmp
+/var/cache
+/var/tmp
+*.sock
+*.pid
+lost+found
+EXCLFILE
+
+echo "Konfiguration deployed."
+SETUP_SCRIPT
+
+    # Pre-Backup Hooks deployen
+    for svc in $services; do
+        echo "Deploye Hook: ${svc}..."
+        case "$svc" in
+            paperless)
+                backup_hook_paperless | ssh $SSH_OPTS "${SSH_USER}@${ip}" "sudo tee /etc/restic/pre-backup.d/10-paperless.sh > /dev/null && sudo chmod 755 /etc/restic/pre-backup.d/10-paperless.sh"
+                ;;
+            guacamole)
+                backup_hook_guacamole | ssh $SSH_OPTS "${SSH_USER}@${ip}" "sudo tee /etc/restic/pre-backup.d/10-guacamole.sh > /dev/null && sudo chmod 755 /etc/restic/pre-backup.d/10-guacamole.sh"
+                ;;
+            uptime-kuma)
+                backup_hook_uptime_kuma | ssh $SSH_OPTS "${SSH_USER}@${ip}" "sudo tee /etc/restic/pre-backup.d/10-uptime-kuma.sh > /dev/null && sudo chmod 755 /etc/restic/pre-backup.d/10-uptime-kuma.sh"
+                ;;
+        esac
+    done
+
+    # Backup-Script deployen
+    cat "${SCRIPT_DIR}/backup/vps-backup.sh" | ssh $SSH_OPTS "${SSH_USER}@${ip}" "sudo tee /usr/local/bin/vps-backup.sh > /dev/null && sudo chmod 755 /usr/local/bin/vps-backup.sh"
+
+    # Repository initialisieren (nur wenn noch nicht vorhanden)
+    echo "Initialisiere Repository (falls nötig)..."
+    ssh_exec "$ip" "sudo bash -c 'source /etc/restic/env && export RESTIC_REPOSITORY RESTIC_PASSWORD_FILE && restic snapshots &>/dev/null || restic init'" 2>/dev/null || true
+
+    # systemd Units deployen
+    echo "Deploye systemd Units..."
+
+    # Backup Service
+    cat "${SCRIPT_DIR}/backup/restic-backup.service" | ssh $SSH_OPTS "${SSH_USER}@${ip}" "sudo tee /etc/systemd/system/restic-backup.service > /dev/null"
+
+    # Backup Timer
+    cat "${SCRIPT_DIR}/backup/restic-backup.timer" | ssh $SSH_OPTS "${SSH_USER}@${ip}" "sudo tee /etc/systemd/system/restic-backup.timer > /dev/null"
+
+    # Prune Service
+    cat "${SCRIPT_DIR}/backup/restic-prune.service" | ssh $SSH_OPTS "${SSH_USER}@${ip}" "sudo tee /etc/systemd/system/restic-prune.service > /dev/null"
+
+    # Prune Timer
+    cat "${SCRIPT_DIR}/backup/restic-prune.timer" | ssh $SSH_OPTS "${SSH_USER}@${ip}" "sudo tee /etc/systemd/system/restic-prune.timer > /dev/null"
+
+    # Timer aktivieren
+    ssh_exec "$ip" "sudo systemctl daemon-reload && sudo systemctl enable --now restic-backup.timer restic-prune.timer"
+
+    print_success "Setup auf ${name} abgeschlossen."
+
+    # Test-Backup ausführen
+    echo "Führe Test-Backup aus..."
+    ssh_exec "$ip" "sudo /usr/local/bin/vps-backup.sh backup"
+    print_success "Test-Backup auf ${name} erfolgreich."
+}
+
+cmd_backup_run() {
+    local target="${1:-}"
+
+    if [[ -z "$target" ]]; then
+        print_error "Bitte Host angeben: vps backup run <host|all>"
+        exit 1
+    fi
+
+    if [[ "$target" == "all" ]]; then
+        # Proxy
+        echo "=== Backup auf Proxy ==="
+        ssh_exec "$PROXY_IP" "sudo /usr/local/bin/vps-backup.sh backup"
+        print_success "Proxy-Backup abgeschlossen."
+
+        # Alle VPS
+        while read -r ip hostname; do
+            echo ""
+            echo "=== Backup auf $hostname ($ip) ==="
+            ssh_exec "$ip" "sudo /usr/local/bin/vps-backup.sh backup"
+            print_success "Backup auf $hostname abgeschlossen."
+        done < <(get_hosts)
+    else
+        local ip=$(resolve_host "$target")
+        echo "=== Backup auf $target ($ip) ==="
+        ssh_exec "$ip" "sudo /usr/local/bin/vps-backup.sh backup"
+        print_success "Backup auf $target abgeschlossen."
+    fi
+}
+
+cmd_backup_list() {
+    local target="${1:-}"
+
+    if [[ -z "$target" ]]; then
+        # Alle Snapshots im Repository anzeigen
+        echo "=== Alle Snapshots im Repository ==="
+        backup_load_config
+        ssh_exec "$PROXY_IP" "sudo bash -c 'source /etc/restic/env && export RESTIC_REPOSITORY RESTIC_PASSWORD_FILE && restic snapshots'"
+    else
+        local ip=$(resolve_host "$target")
+        echo "=== Snapshots für $target ==="
+        ssh_exec "$ip" "sudo /usr/local/bin/vps-backup.sh snapshots"
+    fi
+}
+
+cmd_backup_status() {
+    local target="${1:-}"
+
+    _backup_show_status() {
+        local ip="$1"
+        local name="$2"
+
+        echo "--- ${name} (${ip}) ---"
+
+        # Timer-Status
+        local timer_status
+        timer_status=$(ssh_exec "$ip" "systemctl is-active restic-backup.timer 2>/dev/null" 2>/dev/null || echo "nicht installiert")
+        echo "  Timer: ${timer_status}"
+
+        if [[ "$timer_status" == "active" ]]; then
+            # Nächster Timer-Lauf
+            local next_run
+            next_run=$(ssh_exec "$ip" "systemctl show restic-backup.timer --property=NextElapseUSecRealtime --value 2>/dev/null" 2>/dev/null || echo "unbekannt")
+            echo "  Nächstes Backup: ${next_run}"
+
+            # Letzter Lauf
+            local last_run
+            last_run=$(ssh_exec "$ip" "systemctl show restic-backup.service --property=ExecMainExitTimestamp --value 2>/dev/null" 2>/dev/null || echo "unbekannt")
+            local last_result
+            last_result=$(ssh_exec "$ip" "systemctl show restic-backup.service --property=Result --value 2>/dev/null" 2>/dev/null || echo "unbekannt")
+            echo "  Letztes Backup: ${last_run} (${last_result})"
+        fi
+
+        # Letzter Snapshot
+        local latest_snapshot
+        latest_snapshot=$(ssh_exec "$ip" "sudo bash -c 'source /etc/restic/env && export RESTIC_REPOSITORY RESTIC_PASSWORD_FILE && restic snapshots --host \$(hostname) --latest 1 --compact 2>/dev/null'" 2>/dev/null || echo "  Keine Snapshots gefunden")
+        echo "  Letzter Snapshot:"
+        echo "$latest_snapshot" | sed 's/^/    /'
+        echo ""
+    }
+
+    if [[ -z "$target" || "$target" == "all" ]]; then
+        echo "=== Backup-Status aller Hosts ==="
+        echo ""
+
+        # Proxy
+        _backup_show_status "$PROXY_IP" "proxy"
+
+        # Alle VPS
+        while read -r ip hostname; do
+            _backup_show_status "$ip" "$hostname"
+        done < <(get_hosts)
+    else
+        local ip=$(resolve_host "$target")
+        echo "=== Backup-Status für $target ==="
+        echo ""
+        _backup_show_status "$ip" "$target"
+    fi
+}
+
+cmd_backup_forget() {
+    local target="${1:-}"
+
+    if [[ -z "$target" ]]; then
+        print_error "Bitte Host angeben: vps backup forget <host|all>"
+        exit 1
+    fi
+
+    echo "Retention Policy: 7 daily, 4 weekly, 6 monthly, 1 yearly"
+    echo ""
+
+    if [[ "$target" == "all" ]]; then
+        # Proxy
+        echo "=== Prune auf Proxy ==="
+        ssh_exec "$PROXY_IP" "sudo /usr/local/bin/vps-backup.sh forget"
+        print_success "Prune auf Proxy abgeschlossen."
+
+        # Alle VPS
+        while read -r ip hostname; do
+            echo ""
+            echo "=== Prune auf $hostname ($ip) ==="
+            ssh_exec "$ip" "sudo /usr/local/bin/vps-backup.sh forget"
+            print_success "Prune auf $hostname abgeschlossen."
+        done < <(get_hosts)
+    else
+        local ip=$(resolve_host "$target")
+        echo "=== Prune auf $target ($ip) ==="
+        ssh_exec "$ip" "sudo /usr/local/bin/vps-backup.sh forget"
+        print_success "Prune auf $target abgeschlossen."
+    fi
+}
+
+cmd_backup_check() {
+    echo "=== Repository-Integrität prüfen ==="
+    ssh_exec "$PROXY_IP" "sudo /usr/local/bin/vps-backup.sh check"
+    print_success "Check abgeschlossen."
+}
+
+cmd_backup_restore() {
+    local target="${1:-}"
+    local snapshot="${2:-}"
+
+    if [[ -z "$target" ]]; then
+        print_error "Bitte Host angeben: vps backup restore <host> [snapshot]"
+        exit 1
+    fi
+
+    local ip=$(resolve_host "$target")
+
+    # Snapshots anzeigen
+    echo "=== Verfügbare Snapshots für $target ==="
+    ssh_exec "$ip" "sudo /usr/local/bin/vps-backup.sh snapshots"
+    echo ""
+
+    # Snapshot auswählen
+    if [[ -z "$snapshot" ]]; then
+        read -rp "Snapshot-ID eingeben (oder 'latest' für den letzten): " snapshot
+    fi
+    snapshot="${snapshot:-latest}"
+
+    # Warnung und Bestätigung
+    echo ""
+    print_warning "ACHTUNG: Dies stellt Daten auf ${target} ($ip) wieder her!"
+    print_warning "Vorhandene Dateien werden überschrieben!"
+    echo ""
+    read -rp "Bist du sicher? (ja/nein): " confirm
+    if [[ "$confirm" != "ja" ]]; then
+        echo "Abgebrochen."
+        return 0
+    fi
+
+    echo ""
+    echo "=== Restore auf $target ==="
+
+    # Docker-Dienste stoppen
+    echo "Stoppe Docker-Dienste..."
+    ssh_exec "$ip" "sudo docker ps -q 2>/dev/null | xargs -r sudo docker stop" 2>/dev/null || true
+
+    # Restore ausführen
+    echo "Stelle Snapshot ${snapshot} wieder her..."
+    ssh_exec "$ip" "sudo bash -c 'source /etc/restic/env && export RESTIC_REPOSITORY RESTIC_PASSWORD_FILE && restic restore ${snapshot} --target /'"
+
+    # Datenbank-Restores
+    echo "Prüfe Datenbank-Restores..."
+
+    # Paperless-ngx
+    if ssh_exec "$ip" "test -f /tmp/backups/paperless-db.sql" 2>/dev/null; then
+        echo "Stelle Paperless-ngx Datenbank wieder her..."
+        ssh_exec "$ip" "cd /opt/paperless-ngx && sudo docker compose up -d db && sleep 5 && sudo docker exec -i paperless-ngx-db psql -U paperless < /tmp/backups/paperless-db.sql"
+        print_success "Paperless-ngx DB wiederhergestellt."
+    fi
+
+    # Guacamole
+    if ssh_exec "$ip" "test -f /tmp/backups/guacamole-db.sql" 2>/dev/null; then
+        echo "Stelle Guacamole Datenbank wieder her..."
+        ssh_exec "$ip" "cd /opt/guacamole && sudo docker compose up -d db && sleep 5 && sudo docker exec -i guacamole-db psql -U guacamole < /tmp/backups/guacamole-db.sql"
+        print_success "Guacamole DB wiederhergestellt."
+    fi
+
+    # Uptime Kuma (SQLite - Datei wurde direkt restored)
+    if ssh_exec "$ip" "test -f /tmp/backups/kuma.db" 2>/dev/null; then
+        echo "Stelle Uptime Kuma Datenbank wieder her..."
+        ssh_exec "$ip" "sudo cp /tmp/backups/kuma.db /opt/uptime-kuma/data/kuma.db"
+        print_success "Uptime Kuma DB wiederhergestellt."
+    fi
+
+    # Docker-Dienste starten
+    echo "Starte Docker-Dienste..."
+    ssh_exec "$ip" "for compose in /opt/*/docker-compose.yml; do dir=\$(dirname \"\$compose\"); echo \"Starte \$dir...\"; cd \"\$dir\" && sudo docker compose up -d; done" 2>/dev/null || true
+
+    echo ""
+    print_success "Restore auf ${target} abgeschlossen."
+    echo ""
+    echo "Bitte manuell prüfen:"
+    echo "  - Sind alle Dienste erreichbar?"
+    echo "  - Sind die Daten korrekt?"
+    echo "  - Funktionieren die Datenbanken?"
+}
+
+cmd_backup_help() {
+    cat << 'EOF'
+VPS Backup (Restic + Hetzner Storage Box)
+
+Verwendung: vps backup <befehl> [optionen]
+
+Befehle:
+  setup <host|all>          Backup einrichten (Restic + Config + Timer)
+  run <host|all>            Backup jetzt ausführen
+  list [host]               Snapshots anzeigen (alle oder pro Host)
+  status [host|all]         Backup-Status anzeigen (Timer, letztes Backup)
+  forget <host|all>         Retention Policy anwenden + Prune
+  check                     Repository-Integrität prüfen
+  restore <host> [snapshot] Wiederherstellung (interaktiv)
+  help                      Diese Hilfe anzeigen
+
+Setup:
+  Beim ersten Aufruf von 'vps backup setup' werden die Hetzner Storage Box
+  Zugangsdaten abgefragt und ein SSH-Key generiert. Danach wird auf dem
+  Zielhost Restic installiert, konfiguriert und ein täglicher Backup-Timer
+  eingerichtet.
+
+  Dienste wie Paperless-ngx, Guacamole und Uptime Kuma werden automatisch
+  erkannt und passende Pre-Backup Hooks (Datenbank-Dumps) installiert.
+
+Retention Policy:
+  --keep-daily 7       Letzte 7 Tage
+  --keep-weekly 4      Letzte 4 Wochen
+  --keep-monthly 6     Letzte 6 Monate
+  --keep-yearly 1      1 Jahres-Snapshot
+
+Automatische Backups:
+  - Tägliches Backup um 02:00 Uhr (± 30 Min. zufällige Verzögerung)
+  - Wöchentliches Prune am Sonntag um 04:00 Uhr
+
+Beispiele:
+  vps backup setup proxy            # Backup auf Proxy einrichten
+  vps backup setup all              # Backup auf allen Hosts einrichten
+  vps backup run webserver          # Backup sofort ausführen
+  vps backup list webserver         # Snapshots für webserver anzeigen
+  vps backup status all             # Status aller Hosts
+  vps backup forget all             # Alte Snapshots aufräumen
+  vps backup check                  # Repository prüfen
+  vps backup restore webserver      # Wiederherstellung (interaktiv)
+
+Konfiguration:
+  Proxy: ~/.config/vps-cli/backup   (Storage Box Zugangsdaten)
+  Hosts: /etc/restic/               (Restic-Konfiguration pro Host)
+EOF
+}
+
+cmd_backup() {
+    local subcmd="$1"
+    shift 2>/dev/null || true
+
+    case "$subcmd" in
+        setup)
+            cmd_backup_setup "$@"
+            ;;
+        run)
+            cmd_backup_run "$@"
+            ;;
+        list|ls)
+            cmd_backup_list "$@"
+            ;;
+        status|st)
+            cmd_backup_status "$@"
+            ;;
+        forget|prune)
+            cmd_backup_forget "$@"
+            ;;
+        check)
+            cmd_backup_check "$@"
+            ;;
+        restore)
+            cmd_backup_restore "$@"
+            ;;
+        help|--help|-h|"")
+            cmd_backup_help
+            ;;
+        *)
+            print_error "Unbekannter Backup-Befehl: $subcmd"
+            echo "Verwende 'vps backup help' für eine Liste der Befehle."
+            exit 1
+            ;;
+    esac
+}
+
 # === HELP ===
 cmd_help() {
     cat << 'EOF'
@@ -2497,6 +3164,16 @@ Netcup API:
   netcup install <server>           VPS über API installieren
   netcup help                       Zeigt Netcup-Hilfe mit allen Details
 
+Backup (Restic + Hetzner Storage Box):
+  backup setup <host|all>           Backup einrichten (Restic + Timer)
+  backup run <host|all>             Backup jetzt ausführen
+  backup list [host]                Snapshots anzeigen
+  backup status [host|all]          Backup-Status anzeigen
+  backup forget <host|all>          Alte Snapshots aufräumen (Prune)
+  backup check                      Repository-Integrität prüfen
+  backup restore <host> [snapshot]  Wiederherstellung (interaktiv)
+  backup help                       Zeigt Backup-Hilfe
+
   help                              Zeigt diese Hilfe
 
 Beispiele:
@@ -2516,6 +3193,11 @@ Beispiele:
   vps netcup list                   # Netcup Server auflisten
   vps netcup info v2202501234       # Server-Details (per Hostname)
   vps netcup install 12345          # VPS interaktiv installieren
+  vps backup setup proxy             # Backup auf Proxy einrichten
+  vps backup setup all               # Backup auf allen Hosts
+  vps backup run webserver           # Backup sofort ausführen
+  vps backup status all              # Backup-Status anzeigen
+  vps backup restore webserver       # Wiederherstellung (interaktiv)
 
 Konfiguration:
   Hosts-Datei: /etc/vps-hosts
@@ -2565,6 +3247,9 @@ main() {
             ;;
         netcup)
             cmd_netcup "$@"
+            ;;
+        backup)
+            cmd_backup "$@"
             ;;
         help|--help|-h)
             cmd_help

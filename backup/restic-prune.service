@@ -1,0 +1,10 @@
+[Unit]
+Description=Restic Retention/Prune
+After=network-online.target
+Wants=network-online.target
+
+[Service]
+Type=oneshot
+ExecStart=/usr/local/bin/vps-backup.sh forget
+Nice=10
+IOSchedulingClass=idle
