@@ -1291,6 +1291,191 @@ netcup_api() {
     echo "$body"
 }
 
+# Führt einen API-Aufruf aus und gibt HTTP-Status + Body zurück (ohne exit bei Fehler)
+netcup_api_raw() {
+    local method="$1"
+    local endpoint="$2"
+    shift 2
+    local extra_args=("$@")
+
+    netcup_load_tokens
+
+    local response http_code
+    response=$(curl -s -w "\n%{http_code}" -X "$method" \
+        "${NETCUP_API_BASE}${endpoint}" \
+        -H "Authorization: Bearer ${NETCUP_ACCESS_TOKEN}" \
+        -H "Accept: application/json" \
+        "${extra_args[@]}")
+
+    http_code=$(echo "$response" | tail -1)
+    local body
+    body=$(echo "$response" | sed '$d')
+
+    # Bei 401: Token erneuern und nochmal versuchen
+    if [[ "$http_code" == "401" ]]; then
+        netcup_refresh_token
+        response=$(curl -s -w "\n%{http_code}" -X "$method" \
+            "${NETCUP_API_BASE}${endpoint}" \
+            -H "Authorization: Bearer ${NETCUP_ACCESS_TOKEN}" \
+            -H "Accept: application/json" \
+            "${extra_args[@]}")
+        http_code=$(echo "$response" | tail -1)
+        body=$(echo "$response" | sed '$d')
+    fi
+
+    echo "${http_code}"
+    echo "$body"
+}
+
+# Extrahiert userId aus dem JWT Access-Token
+netcup_get_user_id() {
+    netcup_load_tokens
+
+    # JWT-Payload ist der 2. Teil (Base64-kodiert)
+    local payload
+    payload=$(echo "$NETCUP_ACCESS_TOKEN" | cut -d. -f2)
+
+    # Base64-Padding korrigieren
+    local pad=$(( 4 - ${#payload} % 4 ))
+    if [[ $pad -ne 4 ]]; then
+        payload="${payload}$(printf '%0.s=' $(seq 1 $pad))"
+    fi
+
+    local decoded
+    decoded=$(echo "$payload" | base64 -d 2>/dev/null)
+
+    # Claims durchprobieren: userId, user_id, sub
+    local user_id
+    user_id=$(echo "$decoded" | jq -r '.userId // empty' 2>/dev/null)
+    if [[ -z "$user_id" ]]; then
+        user_id=$(echo "$decoded" | jq -r '.user_id // empty' 2>/dev/null)
+    fi
+    if [[ -z "$user_id" ]]; then
+        user_id=$(echo "$decoded" | jq -r '.sub // empty' 2>/dev/null)
+    fi
+
+    if [[ -z "$user_id" ]]; then
+        print_error "Konnte userId nicht aus dem Token extrahieren."
+        exit 1
+    fi
+
+    echo "$user_id"
+}
+
+# Pollt einen asynchronen Task bis er fertig ist
+netcup_poll_task() {
+    local task_uuid="$1"
+    local task_name="${2:-Task}"
+    local max_polls=360
+    local poll=0
+
+    while [[ $poll -lt $max_polls ]]; do
+        sleep 5
+        ((++poll))
+
+        local response
+        response=$(netcup_api GET "/api/v1/tasks/${task_uuid}")
+
+        local state progress
+        state=$(echo "$response" | jq -r '.state // "UNKNOWN"')
+        progress=$(echo "$response" | jq -r '.taskProgress.progressInPercent // 0' | cut -d. -f1)
+
+        # Fortschritt auf einer Zeile anzeigen
+        printf "\r  ${task_name}... %s%% (%s)   " "$progress" "$state"
+
+        case "$state" in
+            FINISHED)
+                printf "\r  ${task_name}... 100%% (FINISHED)   \n"
+                return 0
+                ;;
+            ERROR|CANCELED|ROLLBACK)
+                printf "\r  ${task_name}... %s%% (%s)   \n" "$progress" "$state"
+                local msg
+                msg=$(echo "$response" | jq -r '.responseError.message // .message // "Unbekannter Fehler"')
+                print_error "${task_name} fehlgeschlagen: $msg"
+                return 1
+                ;;
+        esac
+    done
+
+    echo ""
+    print_error "${task_name}: Zeitüberschreitung nach 30 Minuten."
+    return 1
+}
+
+# Ermittelt die VLAN-ID des Benutzers
+netcup_get_vlan_id() {
+    local user_id="$1"
+
+    local response
+    response=$(netcup_api GET "/api/v1/users/${user_id}/vlans")
+
+    local count
+    count=$(echo "$response" | jq 'length')
+
+    if [[ "$count" -eq 0 ]]; then
+        print_error "Kein CloudVLAN gefunden. Bitte zuerst ein VLAN im SCP anlegen."
+        return 1
+    fi
+
+    if [[ "$count" -eq 1 ]]; then
+        echo "$response" | jq -r '.[0].id'
+        return 0
+    fi
+
+    # Mehrere VLANs: Benutzer wählen lassen
+    echo "Mehrere CloudVLANs gefunden:" >&2
+    echo "" >&2
+    local i=1
+    echo "$response" | jq -r '.[] | "\(.id)\t\(.name // "-")"' | while IFS=$'\t' read -r vid vname; do
+        echo "  $i) VLAN $vid ($vname)" >&2
+        ((++i))
+    done
+
+    local choice
+    read -p "Auswahl [1]: " choice >&2
+    [[ -z "$choice" ]] && choice=1
+
+    echo "$response" | jq -r ".[$((choice - 1))].id"
+}
+
+# Ermittelt die nächste freie CloudVLAN-IP aus /etc/vps-hosts
+netcup_next_free_ip() {
+    local used_ips=()
+
+    # Proxy-IP ist immer belegt
+    used_ips+=("1")
+
+    # Vergebene IPs aus /etc/vps-hosts sammeln
+    if [[ -f "$HOSTS_FILE" ]]; then
+        while read -r ip _hostname; do
+            [[ -z "$ip" ]] && continue
+            # Nur IPs im 10.10.0.x-Bereich
+            if [[ "$ip" =~ ^10\.10\.0\.([0-9]+)$ ]]; then
+                used_ips+=("${BASH_REMATCH[1]}")
+            fi
+        done < <(grep -v '^#' "$HOSTS_FILE" | grep -v '^$')
+    fi
+
+    # Erste freie IP im Bereich 2-254 finden
+    for i in $(seq 2 254); do
+        local found=false
+        for used in "${used_ips[@]}"; do
+            if [[ "$used" -eq "$i" ]]; then
+                found=true
+                break
+            fi
+        done
+        if [[ "$found" == "false" ]]; then
+            echo "${NETWORK_PREFIX}.${i}"
+            return 0
+        fi
+    done
+
+    print_error "Keine freie IP im Bereich ${NETWORK_PREFIX}.2-254 verfügbar."
+    return 1
+}
+
 # Login via Device Code Flow (wie GitHub)
 cmd_netcup_login_device() {
     echo "Netcup SCP API Login (Device Code)"
@@ -1575,6 +1760,508 @@ netcup_resolve_server_id() {
     exit 1
 }
 
+# === NETCUP INSTALL ===
+cmd_netcup_install() {
+    local input="$1"
+
+    if [[ -z "$input" ]]; then
+        print_error "Bitte Server angeben: vps netcup install <id|hostname|name>"
+        exit 1
+    fi
+
+    # Schritt 1: Server identifizieren
+    echo "=== VPS Installation ==="
+    echo ""
+
+    local server_id
+    server_id=$(netcup_resolve_server_id "$input")
+
+    local server_info
+    server_info=$(netcup_api GET "/api/v1/servers/${server_id}?loadServerLiveInfo=true")
+
+    local server_name server_hostname server_state public_ip
+    server_name=$(echo "$server_info" | jq -r '.name // "-"')
+    server_hostname=$(echo "$server_info" | jq -r '.hostname // "-"')
+    public_ip=$(echo "$server_info" | jq -r '.ipv4Addresses[0].ip // "-"')
+    server_state=$(echo "$server_info" | jq -r '.serverLiveInfo.state // "-"')
+
+    echo "Server:     ${server_name} (ID: ${server_id})"
+    echo "Hostname:   ${server_hostname}"
+    echo "Public IP:  ${public_ip}"
+    echo "Status:     ${server_state}"
+    echo ""
+
+    # Schritt 2: Bestätigung
+    print_warning "WARNUNG: Alle Daten auf diesem Server werden gelöscht!"
+    read -p "Bist du sicher? [j/N] " confirm
+    if [[ ! "$confirm" =~ ^[jJyY]$ ]]; then
+        echo "Abgebrochen."
+        exit 0
+    fi
+    echo ""
+
+    # Schritt 3: Image-Auswahl
+    echo "Lade verfügbare Images..."
+    local images
+    images=$(netcup_api GET "/api/v1/servers/${server_id}/imageflavours")
+
+    local image_count
+    image_count=$(echo "$images" | jq 'length')
+
+    if [[ "$image_count" -eq 0 ]]; then
+        print_error "Keine Images verfügbar für diesen Server."
+        exit 1
+    fi
+
+    echo "Verfügbare Images:"
+    echo ""
+
+    # Default erkennen (Debian 13 Minimal)
+    local default_idx=0
+    local i=0
+    echo "$images" | jq -r '.[].name' | while IFS= read -r name; do
+        local num=$((i + 1))
+        echo "  ${num}) ${name}"
+        i=$((i + 1))
+    done
+
+    # Default-Index finden
+    default_idx=$(echo "$images" | jq -r '
+        [range(length)] as $indices |
+        [$indices[] | select(
+            (.[$indices[.]] | .name) as $n |
+            ($n | test("Debian.*13"; "i")) and ($n | test("Minimal"; "i"))
+        )] |
+        if length > 0 then .[0] + 1 else 0 end
+    ' 2>/dev/null || echo "0")
+
+    # Fallback: jq-Ausdruck vereinfacht
+    if [[ "$default_idx" == "0" || -z "$default_idx" ]]; then
+        default_idx=$(echo "$images" | jq -r '
+            to_entries |
+            map(select(.value.name | test("Debian.*13"; "i")) | select(.value.name | test("Minimal"; "i"))) |
+            if length > 0 then .[0].key + 1 else 0 end
+        ' 2>/dev/null || echo "0")
+    fi
+
+    echo ""
+    local image_choice
+    if [[ "$default_idx" -gt 0 ]]; then
+        local default_name
+        default_name=$(echo "$images" | jq -r ".[$((default_idx - 1))].name")
+        read -p "Image wählen [${default_idx} - ${default_name}]: " image_choice
+        [[ -z "$image_choice" ]] && image_choice="$default_idx"
+    else
+        read -p "Image wählen: " image_choice
+    fi
+
+    if [[ -z "$image_choice" ]] || ! [[ "$image_choice" =~ ^[0-9]+$ ]] || [[ "$image_choice" -lt 1 ]] || [[ "$image_choice" -gt "$image_count" ]]; then
+        print_error "Ungültige Auswahl."
+        exit 1
+    fi
+
+    local image_idx=$((image_choice - 1))
+    local image_id image_name
+    image_id=$(echo "$images" | jq -r ".[$image_idx].id")
+    image_name=$(echo "$images" | jq -r ".[$image_idx].name")
+    echo "  -> ${image_name}"
+    echo ""
+
+    # Schritt 4: Disk ermitteln (automatisch)
+    local disks
+    disks=$(netcup_api GET "/api/v1/servers/${server_id}/disks")
+
+    local disk_name disk_size_mib disk_size_gib
+    disk_name=$(echo "$disks" | jq -r '.[0].name')
+    disk_size_mib=$(echo "$disks" | jq -r '.[0].capacityInMiB // 0')
+    disk_size_gib=$(( disk_size_mib / 1024 ))
+
+    echo "Disk: ${disk_name} (${disk_size_gib} GiB)"
+    echo ""
+
+    # Schritt 5: Hostname eingeben
+    local new_hostname
+    while true; do
+        read -p "Hostname: " new_hostname
+        if [[ -z "$new_hostname" ]]; then
+            print_error "Hostname darf nicht leer sein."
+            continue
+        fi
+        if [[ ! "$new_hostname" =~ ^[a-zA-Z0-9]([a-zA-Z0-9-]{0,61}[a-zA-Z0-9])?$ ]]; then
+            print_error "Ungültiger Hostname. Erlaubt: Buchstaben, Zahlen, Bindestriche (max 63 Zeichen)."
+            continue
+        fi
+        break
+    done
+    echo ""
+
+    # Schritt 6: Passwort für master-User
+    local password
+    while true; do
+        read -s -p "Passwort für User 'master': " password
+        echo ""
+        if [[ ${#password} -lt 8 ]]; then
+            print_error "Passwort muss mindestens 8 Zeichen lang sein."
+            continue
+        fi
+        if [[ ! "$password" =~ [A-Z] ]]; then
+            print_error "Passwort muss mindestens einen Großbuchstaben enthalten."
+            continue
+        fi
+        if [[ ! "$password" =~ [a-z] ]]; then
+            print_error "Passwort muss mindestens einen Kleinbuchstaben enthalten."
+            continue
+        fi
+        if [[ ! "$password" =~ [0-9] ]]; then
+            print_error "Passwort muss mindestens eine Zahl enthalten."
+            continue
+        fi
+
+        local password_confirm
+        read -s -p "Passwort bestätigen: " password_confirm
+        echo ""
+        if [[ "$password" != "$password_confirm" ]]; then
+            print_error "Passwörter stimmen nicht überein."
+            continue
+        fi
+        break
+    done
+    echo ""
+
+    # Schritt 7: CloudVLAN einrichten?
+    local setup_vlan=true
+    local vlan_ip="" vlan_id=""
+    read -p "CloudVLAN einrichten? [J/n] " vlan_choice
+    if [[ "$vlan_choice" =~ ^[nN]$ ]]; then
+        setup_vlan=false
+    fi
+
+    if [[ "$setup_vlan" == "true" ]]; then
+        vlan_ip=$(netcup_next_free_ip)
+        echo "  Nächste freie IP: ${vlan_ip}"
+
+        local user_id
+        user_id=$(netcup_get_user_id)
+
+        vlan_id=$(netcup_get_vlan_id "$user_id")
+        if [[ -z "$vlan_id" ]]; then
+            exit 1
+        fi
+        echo "  VLAN-ID: ${vlan_id}"
+    fi
+    echo ""
+
+    # Schritt 8: SSH-Key sicherstellen
+    echo "Prüfe SSH-Key..."
+    local user_id
+    if [[ -z "${user_id:-}" ]]; then
+        user_id=$(netcup_get_user_id)
+    fi
+
+    local proxy_pubkey
+    proxy_pubkey=$(proxy_exec "cat /home/master/.ssh/id_ed25519.pub")
+
+    if [[ -z "$proxy_pubkey" ]]; then
+        print_error "Konnte Proxy-Pubkey nicht lesen (/home/master/.ssh/id_ed25519.pub)."
+        exit 1
+    fi
+
+    # Pubkey-Fingerprint zum Vergleich (nur der Key-Teil, ohne Kommentar)
+    local pubkey_data
+    pubkey_data=$(echo "$proxy_pubkey" | awk '{print $1 " " $2}')
+
+    local ssh_keys ssh_key_id
+    ssh_keys=$(netcup_api GET "/api/v1/users/${user_id}/ssh-keys")
+
+    # Prüfen ob Key bereits existiert (vergleiche key-Feld)
+    ssh_key_id=$(echo "$ssh_keys" | jq -r --arg key "$pubkey_data" '
+        [.[] | select(.key | startswith($key))] |
+        if length > 0 then .[0].id | tostring else empty end
+    ')
+
+    if [[ -z "$ssh_key_id" ]]; then
+        echo "  SSH-Key wird hochgeladen..."
+        local key_response
+        key_response=$(netcup_api POST "/api/v1/users/${user_id}/ssh-keys" \
+            -H "Content-Type: application/json" \
+            -d "$(jq -n --arg name "proxy-key-$(hostname 2>/dev/null || echo 'vps')" \
+                       --arg key "$proxy_pubkey" \
+                       '{name: $name, key: $key}')")
+        ssh_key_id=$(echo "$key_response" | jq -r '.id')
+        echo "  SSH-Key hochgeladen (ID: ${ssh_key_id})"
+    else
+        echo "  SSH-Key bereits vorhanden (ID: ${ssh_key_id})"
+    fi
+    echo ""
+
+    # Schritt 9: Zusammenfassung + letzte Bestätigung
+    echo "Zusammenfassung:"
+    echo "  Server:    ${server_name} (ID: ${server_id})"
+    echo "  Image:     ${image_name}"
+    echo "  Disk:      ${disk_name} (${disk_size_gib} GiB)"
+    echo "  Hostname:  ${new_hostname}"
+    echo "  User:      master"
+    if [[ "$setup_vlan" == "true" ]]; then
+        echo "  CloudVLAN: ${vlan_ip} (VLAN: ${vlan_id})"
+    else
+        echo "  CloudVLAN: nein"
+    fi
+    echo ""
+    read -p "Installation jetzt starten? [j/N] " confirm
+    if [[ ! "$confirm" =~ ^[jJyY]$ ]]; then
+        echo "Abgebrochen."
+        exit 0
+    fi
+    echo ""
+
+    # Schritt 10: Post-Install-Script zusammenbauen
+    local custom_script
+    custom_script='#!/bin/bash
+set -e
+
+# SSH Root-Login deaktivieren
+sed -i '"'"'s/^#*PermitRootLogin.*/PermitRootLogin no/'"'"' /etc/ssh/sshd_config
+systemctl restart sshd
+
+# Sudo ohne Passwort fuer master
+echo '"'"'master ALL=(ALL) NOPASSWD:ALL'"'"' > /etc/sudoers.d/master
+chmod 440 /etc/sudoers.d/master
+'
+
+    if [[ "$setup_vlan" == "true" ]]; then
+        custom_script+='
+# CloudVLAN-Interface finden
+CLOUDVLAN_INTERFACE=""
+for iface in ens6 eth1 ens7 eth2; do
+    ip link show "$iface" 2>/dev/null && CLOUDVLAN_INTERFACE="$iface" && break
+done
+[[ -z "$CLOUDVLAN_INTERFACE" ]] && CLOUDVLAN_INTERFACE="ens6"
+
+cat >> /etc/network/interfaces << IFACE
+
+auto ${CLOUDVLAN_INTERFACE}
+iface ${CLOUDVLAN_INTERFACE} inet static
+    address '"${vlan_ip}"'/24
+    mtu 1400
+IFACE
+
+ifup "$CLOUDVLAN_INTERFACE" 2>/dev/null || true
+
+# UFW: nur CloudVLAN-Zugriff
+apt-get update -qq
+apt-get install -y -qq ufw
+ufw default deny incoming
+ufw default allow outgoing
+ufw allow from 10.10.0.0/24
+ufw --force enable
+'
+    else
+        custom_script+='
+# UFW mit SSH offen
+apt-get update -qq
+apt-get install -y -qq ufw
+ufw default deny incoming
+ufw default allow outgoing
+ufw allow 22/tcp
+ufw allow from 10.10.0.0/24
+ufw --force enable
+'
+    fi
+
+    # Image installieren
+    echo "Starte Image-Installation..."
+    local install_body
+    install_body=$(jq -n \
+        --argjson imageFlavourId "$image_id" \
+        --arg diskName "$disk_name" \
+        --arg hostname "$new_hostname" \
+        --arg password "$password" \
+        --argjson sshKeyId "$ssh_key_id" \
+        --arg customScript "$custom_script" \
+        '{
+            imageFlavourId: $imageFlavourId,
+            diskName: $diskName,
+            rootPartitionFullDiskSize: true,
+            hostname: $hostname,
+            locale: "de_DE",
+            timezone: "Europe/Berlin",
+            additionalUserUsername: "master",
+            additionalUserPassword: $password,
+            sshKeyIds: [$sshKeyId],
+            sshPasswordAuthentication: false,
+            customScript: $customScript,
+            emailToExecutingUser: false
+        }')
+
+    local install_response
+    install_response=$(netcup_api_raw POST "/api/v1/servers/${server_id}/image" \
+        -H "Content-Type: application/json" \
+        -d "$install_body")
+
+    local install_http_code
+    install_http_code=$(echo "$install_response" | head -1)
+    local install_body_response
+    install_body_response=$(echo "$install_response" | tail -n +2)
+
+    if [[ "$install_http_code" -ge 400 ]]; then
+        local msg
+        msg=$(echo "$install_body_response" | jq -r '.message // empty' 2>/dev/null)
+        print_error "Installation fehlgeschlagen (HTTP ${install_http_code}): ${msg:-$install_body_response}"
+        exit 1
+    fi
+
+    local task_uuid
+    task_uuid=$(echo "$install_body_response" | jq -r '.uuid')
+
+    if [[ -z "$task_uuid" || "$task_uuid" == "null" ]]; then
+        print_error "Konnte Task-UUID nicht ermitteln."
+        exit 1
+    fi
+
+    if ! netcup_poll_task "$task_uuid" "Installation"; then
+        print_error "Image-Installation fehlgeschlagen."
+        exit 1
+    fi
+    print_success "Image-Installation abgeschlossen."
+    echo ""
+
+    # Schritt 11: CloudVLAN-Interface anlegen (wenn gewählt)
+    if [[ "$setup_vlan" == "true" ]]; then
+        echo "Prüfe CloudVLAN-Interface..."
+
+        local interfaces
+        interfaces=$(netcup_api GET "/api/v1/servers/${server_id}/interfaces")
+
+        local has_vlan_interface
+        has_vlan_interface=$(echo "$interfaces" | jq '[.[] | select(.vlanInterface == true)] | length')
+
+        if [[ "$has_vlan_interface" -eq 0 ]]; then
+            echo "  Lege CloudVLAN-Interface an..."
+            local vlan_response
+            vlan_response=$(netcup_api_raw POST "/api/v1/servers/${server_id}/interfaces" \
+                -H "Content-Type: application/merge-patch+json" \
+                -d "$(jq -n --argjson vlanId "$vlan_id" '{vlanId: $vlanId, networkDriver: "VIRTIO"}')")
+
+            local vlan_http_code
+            vlan_http_code=$(echo "$vlan_response" | head -1)
+            local vlan_body
+            vlan_body=$(echo "$vlan_response" | tail -n +2)
+
+            if [[ "$vlan_http_code" -ge 400 ]]; then
+                local msg
+                msg=$(echo "$vlan_body" | jq -r '.message // empty' 2>/dev/null)
+                print_warning "VLAN-Interface konnte nicht angelegt werden (HTTP ${vlan_http_code}): ${msg:-$vlan_body}"
+            else
+                local vlan_task_uuid
+                vlan_task_uuid=$(echo "$vlan_body" | jq -r '.uuid // empty')
+
+                if [[ -n "$vlan_task_uuid" && "$vlan_task_uuid" != "null" ]]; then
+                    if ! netcup_poll_task "$vlan_task_uuid" "VLAN-Interface"; then
+                        print_warning "VLAN-Interface-Erstellung fehlgeschlagen."
+                    else
+                        print_success "VLAN-Interface angelegt."
+                    fi
+                fi
+            fi
+        else
+            echo "  VLAN-Interface bereits vorhanden."
+        fi
+        echo ""
+    fi
+
+    # Schritt 12: Server starten
+    echo "Starte Server..."
+    local start_response
+    start_response=$(netcup_api_raw PATCH "/api/v1/servers/${server_id}" \
+        -H "Content-Type: application/merge-patch+json" \
+        -d '{"state": "ON"}')
+
+    local start_http_code
+    start_http_code=$(echo "$start_response" | head -1)
+    local start_body
+    start_body=$(echo "$start_response" | tail -n +2)
+
+    if [[ "$start_http_code" -ge 400 ]]; then
+        print_warning "Server konnte nicht gestartet werden. Bitte manuell starten."
+    else
+        # Prüfen ob async (202) oder sync (200)
+        local start_task_uuid
+        start_task_uuid=$(echo "$start_body" | jq -r '.uuid // empty' 2>/dev/null)
+        if [[ -n "$start_task_uuid" && "$start_task_uuid" != "null" ]]; then
+            netcup_poll_task "$start_task_uuid" "Server starten" || true
+        fi
+        print_success "Server gestartet."
+    fi
+    echo ""
+
+    # Schritt 13: Hostname + Nickname setzen
+    echo "Setze Hostname und Nickname..."
+    netcup_api_raw PATCH "/api/v1/servers/${server_id}" \
+        -H "Content-Type: application/merge-patch+json" \
+        -d "$(jq -n --arg hostname "$new_hostname" '{hostname: $hostname}')" > /dev/null
+
+    netcup_api_raw PATCH "/api/v1/servers/${server_id}" \
+        -H "Content-Type: application/merge-patch+json" \
+        -d "$(jq -n --arg nickname "$new_hostname" '{nickname: $nickname}')" > /dev/null
+
+    echo "  Hostname: ${new_hostname}"
+    echo "  Nickname: ${new_hostname}"
+    echo ""
+
+    # Schritt 14: In /etc/vps-hosts eintragen (wenn CloudVLAN)
+    if [[ "$setup_vlan" == "true" ]]; then
+        echo "Trage in /etc/vps-hosts ein..."
+
+        # Prüfen ob IP oder Hostname schon vorhanden
+        local already_exists=false
+        if [[ -f "$HOSTS_FILE" ]]; then
+            if grep -q "^${vlan_ip} " "$HOSTS_FILE" 2>/dev/null || \
+               grep -q " ${new_hostname}$" "$HOSTS_FILE" 2>/dev/null; then
+                already_exists=true
+            fi
+        fi
+
+        if [[ "$already_exists" == "true" ]]; then
+            print_warning "  IP oder Hostname bereits in ${HOSTS_FILE} vorhanden. Übersprungen."
+        else
+            proxy_exec "echo '${vlan_ip} ${new_hostname}' | sudo tee -a ${HOSTS_FILE}" > /dev/null
+            echo "  ${vlan_ip} ${new_hostname} eingetragen."
+        fi
+        echo ""
+    fi
+
+    # Schritt 15: SSH-Verbindungstest (wenn CloudVLAN)
+    if [[ "$setup_vlan" == "true" ]]; then
+        echo "Warte auf SSH-Verbindung über CloudVLAN..."
+        local ssh_ok=false
+        for attempt in $(seq 1 12); do
+            sleep 10
+            printf "\r  Versuch %d/12..." "$attempt"
+            if proxy_exec "ssh ${SSH_OPTS} master@${vlan_ip} hostname" &>/dev/null; then
+                ssh_ok=true
+                break
+            fi
+        done
+        echo ""
+
+        if [[ "$ssh_ok" == "true" ]]; then
+            print_success "SSH-Verbindung erfolgreich!"
+        else
+            print_warning "SSH-Verbindung konnte nicht hergestellt werden. Bitte manuell prüfen."
+        fi
+        echo ""
+    fi
+
+    # Schritt 16: Fertigmeldung
+    echo ""
+    print_success "VPS '${new_hostname}' ist bereit!"
+    if [[ "$setup_vlan" == "true" ]]; then
+        echo "  CloudVLAN-IP: ${vlan_ip}"
+        echo "  SSH: vps ssh ${new_hostname}"
+    fi
+    echo "  Öffentliche IP: ${public_ip}"
+}
+
 # Netcup Hilfe
 cmd_netcup_help() {
     cat << 'EOF'
@@ -1587,10 +2274,11 @@ Befehle:
   logout                Logout und Token widerrufen
   list [suche]          Alle Server auflisten (optional mit Suchbegriff)
   info <server>         Server-Details anzeigen
+  install <server>      VPS neu installieren (interaktiv)
   help                  Diese Hilfe anzeigen
 
 Server-Identifikation:
-  Bei 'info' kann der Server per ID, Hostname oder Name angegeben werden.
+  Bei 'info' und 'install' kann der Server per ID, Hostname oder Name angegeben werden.
   Beispiel: vps netcup info 12345
             vps netcup info v2202501234567
             vps netcup info mein-server
@@ -1601,6 +2289,7 @@ Beispiele:
   vps netcup list webserver     # Server mit 'webserver' suchen
   vps netcup info 12345         # Server-Details per ID
   vps netcup info v2202501234   # Server-Details per Hostname
+  vps netcup install 12345      # VPS interaktiv installieren
 EOF
 }
 
@@ -1621,6 +2310,9 @@ cmd_netcup() {
             ;;
         info)
             cmd_netcup_info "$@"
+            ;;
+        install)
+            cmd_netcup_install "$@"
             ;;
         help|--help|-h|"")
             cmd_netcup_help
@@ -1677,6 +2369,7 @@ Netcup API:
   netcup logout                     Logout (Token widerrufen)
   netcup list [suche]               Zeigt alle Netcup Server
   netcup info <server>              Zeigt Server-Details (ID, Hostname oder Name)
+  netcup install <server>           VPS über API installieren
   netcup help                       Zeigt Netcup-Hilfe mit allen Details
 
   help                              Zeigt diese Hilfe
@@ -1697,6 +2390,7 @@ Beispiele:
   vps netcup login                  # Login via Browser
   vps netcup list                   # Netcup Server auflisten
   vps netcup info v2202501234       # Server-Details (per Hostname)
+  vps netcup install 12345          # VPS interaktiv installieren
 
 Konfiguration:
   Hosts-Datei: /etc/vps-hosts
