@@ -2696,14 +2696,15 @@ _backup_setup_host() {
     # SSH-Key auf den Host kopieren (für Storage Box Zugriff)
     local key_file="${HOME}/.ssh/backup_storagebox"
     echo "Kopiere SSH-Key auf ${name}..."
-    ssh $SSH_OPTS "${SSH_USER}@${ip}" "sudo mkdir -p /root/.ssh && sudo chmod 700 /root/.ssh" 2>/dev/null || true
+    ssh_exec "$ip" "sudo mkdir -p /root/.ssh && sudo chmod 700 /root/.ssh" 2>/dev/null || true
 
     # Key-Dateien übertragen
-    cat "$key_file" | ssh $SSH_OPTS "${SSH_USER}@${ip}" "sudo tee /root/.ssh/backup_storagebox > /dev/null && sudo chmod 600 /root/.ssh/backup_storagebox"
-    cat "${key_file}.pub" | ssh $SSH_OPTS "${SSH_USER}@${ip}" "sudo tee /root/.ssh/backup_storagebox.pub > /dev/null"
+    cat "$key_file" | host_write "$ip" "/root/.ssh/backup_storagebox"
+    ssh_exec "$ip" "sudo chmod 600 /root/.ssh/backup_storagebox"
+    cat "${key_file}.pub" | host_write "$ip" "/root/.ssh/backup_storagebox.pub"
 
     # SSH-Config für Storage Box Port 23
-    ssh $SSH_OPTS "${SSH_USER}@${ip}" "sudo bash -c 'grep -q \"Host ${STORAGE_HOST}\" /root/.ssh/config 2>/dev/null || cat >> /root/.ssh/config << SSHCONF
+    ssh_exec "$ip" "sudo bash -c 'grep -q \"Host ${STORAGE_HOST}\" /root/.ssh/config 2>/dev/null || cat >> /root/.ssh/config << SSHCONF
 
 Host ${STORAGE_HOST}
     Port 23
@@ -2767,19 +2768,23 @@ SETUP_SCRIPT
         echo "Deploye Hook: ${svc}..."
         case "$svc" in
             paperless)
-                backup_hook_paperless | ssh $SSH_OPTS "${SSH_USER}@${ip}" "sudo tee /etc/restic/pre-backup.d/10-paperless.sh > /dev/null && sudo chmod 755 /etc/restic/pre-backup.d/10-paperless.sh"
+                backup_hook_paperless | host_write "$ip" "/etc/restic/pre-backup.d/10-paperless.sh"
+                ssh_exec "$ip" "sudo chmod 755 /etc/restic/pre-backup.d/10-paperless.sh"
                 ;;
             guacamole)
-                backup_hook_guacamole | ssh $SSH_OPTS "${SSH_USER}@${ip}" "sudo tee /etc/restic/pre-backup.d/10-guacamole.sh > /dev/null && sudo chmod 755 /etc/restic/pre-backup.d/10-guacamole.sh"
+                backup_hook_guacamole | host_write "$ip" "/etc/restic/pre-backup.d/10-guacamole.sh"
+                ssh_exec "$ip" "sudo chmod 755 /etc/restic/pre-backup.d/10-guacamole.sh"
                 ;;
             uptime-kuma)
-                backup_hook_uptime_kuma | ssh $SSH_OPTS "${SSH_USER}@${ip}" "sudo tee /etc/restic/pre-backup.d/10-uptime-kuma.sh > /dev/null && sudo chmod 755 /etc/restic/pre-backup.d/10-uptime-kuma.sh"
+                backup_hook_uptime_kuma | host_write "$ip" "/etc/restic/pre-backup.d/10-uptime-kuma.sh"
+                ssh_exec "$ip" "sudo chmod 755 /etc/restic/pre-backup.d/10-uptime-kuma.sh"
                 ;;
         esac
     done
 
     # Backup-Script deployen
-    cat "${SCRIPT_DIR}/backup/vps-backup.sh" | ssh $SSH_OPTS "${SSH_USER}@${ip}" "sudo tee /usr/local/bin/vps-backup.sh > /dev/null && sudo chmod 755 /usr/local/bin/vps-backup.sh"
+    cat "${SCRIPT_DIR}/backup/vps-backup.sh" | host_write "$ip" "/usr/local/bin/vps-backup.sh"
+    ssh_exec "$ip" "sudo chmod 755 /usr/local/bin/vps-backup.sh"
 
     # Repository initialisieren (nur wenn noch nicht vorhanden)
     echo "Initialisiere Repository (falls nötig)..."
@@ -2789,16 +2794,16 @@ SETUP_SCRIPT
     echo "Deploye systemd Units..."
 
     # Backup Service
-    cat "${SCRIPT_DIR}/backup/restic-backup.service" | ssh $SSH_OPTS "${SSH_USER}@${ip}" "sudo tee /etc/systemd/system/restic-backup.service > /dev/null"
+    cat "${SCRIPT_DIR}/backup/restic-backup.service" | host_write "$ip" "/etc/systemd/system/restic-backup.service"
 
     # Backup Timer
-    cat "${SCRIPT_DIR}/backup/restic-backup.timer" | ssh $SSH_OPTS "${SSH_USER}@${ip}" "sudo tee /etc/systemd/system/restic-backup.timer > /dev/null"
+    cat "${SCRIPT_DIR}/backup/restic-backup.timer" | host_write "$ip" "/etc/systemd/system/restic-backup.timer"
 
     # Prune Service
-    cat "${SCRIPT_DIR}/backup/restic-prune.service" | ssh $SSH_OPTS "${SSH_USER}@${ip}" "sudo tee /etc/systemd/system/restic-prune.service > /dev/null"
+    cat "${SCRIPT_DIR}/backup/restic-prune.service" | host_write "$ip" "/etc/systemd/system/restic-prune.service"
 
     # Prune Timer
-    cat "${SCRIPT_DIR}/backup/restic-prune.timer" | ssh $SSH_OPTS "${SSH_USER}@${ip}" "sudo tee /etc/systemd/system/restic-prune.timer > /dev/null"
+    cat "${SCRIPT_DIR}/backup/restic-prune.timer" | host_write "$ip" "/etc/systemd/system/restic-prune.timer"
 
     # Timer aktivieren
     ssh_exec "$ip" "sudo systemctl daemon-reload && sudo systemctl enable --now restic-backup.timer restic-prune.timer"
