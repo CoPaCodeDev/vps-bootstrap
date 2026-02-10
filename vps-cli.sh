@@ -1816,39 +1816,30 @@ cmd_netcup_install() {
     echo "Verfügbare Images:"
     echo ""
 
-    # Default erkennen (Debian 13 Minimal)
+    # Image-Anzeigenamen: "image.name - name" (z.B. "Debian 13 - minimal")
     local default_idx=0
     local i=0
-    echo "$images" | jq -r '.[].name' | while IFS= read -r name; do
+    echo "$images" | jq -r '.[] | (.image.name // "?") + " - " + (.name // "?")' | while IFS= read -r display_name; do
         local num=$((i + 1))
-        echo "  ${num}) ${name}"
+        echo "  ${num}) ${display_name}"
         i=$((i + 1))
     done
 
-    # Default-Index finden
+    # Default-Index finden (Debian 13 + Minimal)
     default_idx=$(echo "$images" | jq -r '
-        [range(length)] as $indices |
-        [$indices[] | select(
-            (.[$indices[.]] | .name) as $n |
-            ($n | test("Debian.*13"; "i")) and ($n | test("Minimal"; "i"))
-        )] |
-        if length > 0 then .[0] + 1 else 0 end
+        to_entries |
+        map(select(
+            ((.value.image.name // "") | test("Debian.*13"; "i")) and
+            ((.value.name // "") | test("Minimal"; "i"))
+        )) |
+        if length > 0 then .[0].key + 1 else 0 end
     ' 2>/dev/null || echo "0")
-
-    # Fallback: jq-Ausdruck vereinfacht
-    if [[ "$default_idx" == "0" || -z "$default_idx" ]]; then
-        default_idx=$(echo "$images" | jq -r '
-            to_entries |
-            map(select(.value.name | test("Debian.*13"; "i")) | select(.value.name | test("Minimal"; "i"))) |
-            if length > 0 then .[0].key + 1 else 0 end
-        ' 2>/dev/null || echo "0")
-    fi
 
     echo ""
     local image_choice
     if [[ "$default_idx" -gt 0 ]]; then
         local default_name
-        default_name=$(echo "$images" | jq -r ".[$((default_idx - 1))].name")
+        default_name=$(echo "$images" | jq -r ".[$((default_idx - 1))] | (.image.name // \"?\") + \" - \" + (.name // \"?\")")
         read -p "Image wählen [${default_idx} - ${default_name}]: " image_choice
         [[ -z "$image_choice" ]] && image_choice="$default_idx"
     else
@@ -1863,7 +1854,7 @@ cmd_netcup_install() {
     local image_idx=$((image_choice - 1))
     local image_id image_name
     image_id=$(echo "$images" | jq -r ".[$image_idx].id")
-    image_name=$(echo "$images" | jq -r ".[$image_idx].name")
+    image_name=$(echo "$images" | jq -r ".[$image_idx] | (.image.name // \"?\") + \" - \" + (.name // \"?\")")
     echo "  -> ${image_name}"
     echo ""
 
