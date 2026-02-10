@@ -1331,22 +1331,34 @@ netcup_api_raw() {
 netcup_get_user_id() {
     netcup_load_tokens
 
-    # JWT-Payload ist der 2. Teil (Base64-kodiert)
+    local user_id
+
+    # 1. Tasks-API: executingUser.id aus bisherigen Tasks lesen (zuverlässigste Quelle)
+    local tasks
+    tasks=$(netcup_api GET "/api/v1/tasks" 2>/dev/null || true)
+    if [[ -n "$tasks" ]]; then
+        user_id=$(echo "$tasks" | jq -r '
+            [.[] | .executingUser.id // empty] |
+            map(select(. != null and . > 0)) |
+            if length > 0 then .[0] | tostring else empty end
+        ' 2>/dev/null)
+        if [[ -n "$user_id" && "$user_id" =~ ^[0-9]+$ ]]; then
+            echo "$user_id"
+            return 0
+        fi
+    fi
+
+    # 2. JWT-Claims durchprobieren
     local payload
     payload=$(echo "$NETCUP_ACCESS_TOKEN" | cut -d. -f2)
-
-    # Base64-Padding korrigieren
     local pad=$(( 4 - ${#payload} % 4 ))
     if [[ $pad -ne 4 ]]; then
         payload="${payload}$(printf '%0.s=' $(seq 1 $pad))"
     fi
-
     local decoded
     decoded=$(echo "$payload" | base64 -d 2>/dev/null)
 
-    # 1. Bekannte Claims mit numerischem Wert durchprobieren
-    local user_id
-    for claim in userId user_id uid scp_user_id netcup_user_id; do
+    for claim in userId user_id uid scp_user_id preferred_username; do
         user_id=$(echo "$decoded" | jq -r --arg c "$claim" '.[$c] // empty' 2>/dev/null)
         if [[ -n "$user_id" && "$user_id" =~ ^[0-9]+$ ]]; then
             echo "$user_id"
@@ -1354,36 +1366,10 @@ netcup_get_user_id() {
         fi
     done
 
-    # 2. preferred_username prüfen (bei Netcup evtl. die numerische Kundennummer)
-    user_id=$(echo "$decoded" | jq -r '.preferred_username // empty' 2>/dev/null)
-    if [[ -n "$user_id" && "$user_id" =~ ^[0-9]+$ ]]; then
-        echo "$user_id"
-        return 0
-    fi
-
-    # 3. Keycloak Userinfo-Endpoint als Fallback
-    local userinfo_url="https://www.servercontrolpanel.de/realms/scp/protocol/openid-connect/userinfo"
-    local userinfo
-    userinfo=$(curl -s -H "Authorization: Bearer ${NETCUP_ACCESS_TOKEN}" "$userinfo_url" 2>/dev/null)
-
-    if [[ -n "$userinfo" ]]; then
-        for claim in userId user_id uid preferred_username sub; do
-            user_id=$(echo "$userinfo" | jq -r --arg c "$claim" '.[$c] // empty' 2>/dev/null)
-            if [[ -n "$user_id" && "$user_id" =~ ^[0-9]+$ ]]; then
-                echo "$user_id"
-                return 0
-            fi
-        done
-    fi
-
-    # 4. Nichts gefunden - Debug-Ausgabe
+    # 3. Nichts gefunden - Debug-Ausgabe
     print_error "Konnte numerische userId nicht ermitteln."
     echo "  JWT-Claims:" >&2
     echo "$decoded" | jq -r 'to_entries[] | "    \(.key) = \(.value)"' 2>/dev/null >&2
-    if [[ -n "$userinfo" ]]; then
-        echo "  Userinfo-Claims:" >&2
-        echo "$userinfo" | jq -r 'to_entries[] | "    \(.key) = \(.value)"' 2>/dev/null >&2
-    fi
     exit 1
 }
 
