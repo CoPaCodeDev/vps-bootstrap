@@ -1344,22 +1344,34 @@ netcup_get_user_id() {
     local decoded
     decoded=$(echo "$payload" | base64 -d 2>/dev/null)
 
-    # Claims durchprobieren: userId, user_id, sub
+    # Zuerst bekannte Claims mit numerischem Wert durchprobieren
     local user_id
-    user_id=$(echo "$decoded" | jq -r '.userId // empty' 2>/dev/null)
-    if [[ -z "$user_id" ]]; then
-        user_id=$(echo "$decoded" | jq -r '.user_id // empty' 2>/dev/null)
-    fi
-    if [[ -z "$user_id" ]]; then
-        user_id=$(echo "$decoded" | jq -r '.sub // empty' 2>/dev/null)
+    for claim in userId user_id uid scp_user_id netcup_user_id; do
+        user_id=$(echo "$decoded" | jq -r --arg c "$claim" '.[$c] // empty' 2>/dev/null)
+        if [[ -n "$user_id" && "$user_id" =~ ^[0-9]+$ ]]; then
+            echo "$user_id"
+            return 0
+        fi
+    done
+
+    # Fallback: Alle numerischen Top-Level-Werte durchsuchen
+    user_id=$(echo "$decoded" | jq -r '
+        to_entries |
+        map(select(.value | type == "number" and . > 1000)) |
+        sort_by(.key | test("user|id"; "i") | not) |
+        if length > 0 then .[0].value | tostring else empty end
+    ' 2>/dev/null)
+
+    if [[ -n "$user_id" && "$user_id" =~ ^[0-9]+$ ]]; then
+        echo "$user_id"
+        return 0
     fi
 
-    if [[ -z "$user_id" ]]; then
-        print_error "Konnte userId nicht aus dem Token extrahieren."
-        exit 1
-    fi
-
-    echo "$user_id"
+    # Nichts gefunden - Debug-Ausgabe
+    print_error "Konnte numerische userId nicht aus dem Token extrahieren."
+    echo "  Verfügbare Claims:" >&2
+    echo "$decoded" | jq -r 'to_entries[] | "    \(.key) = \(.value)"' 2>/dev/null >&2
+    exit 1
 }
 
 # Pollt einen asynchronen Task bis er fertig ist
