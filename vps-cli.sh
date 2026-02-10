@@ -2949,11 +2949,55 @@ cmd_backup_check() {
 }
 
 cmd_backup_restore() {
-    local target="${1:-}"
-    local snapshot="${2:-}"
+    local target=""
+    local snapshot=""
+    local service=""
+    local restore_path=""
+
+    # Argument-Parsing: Positionsargs + --service / --path
+    while [[ $# -gt 0 ]]; do
+        case "$1" in
+            --service)
+                service="${2:-}"
+                if [[ -z "$service" ]]; then
+                    print_error "--service benötigt einen Dienstnamen"
+                    exit 1
+                fi
+                shift 2
+                ;;
+            --path)
+                restore_path="${2:-}"
+                if [[ -z "$restore_path" ]]; then
+                    print_error "--path benötigt einen Pfad"
+                    exit 1
+                fi
+                shift 2
+                ;;
+            -*)
+                print_error "Unbekannte Option: $1"
+                exit 1
+                ;;
+            *)
+                if [[ -z "$target" ]]; then
+                    target="$1"
+                elif [[ -z "$snapshot" ]]; then
+                    snapshot="$1"
+                else
+                    print_error "Zu viele Argumente: $1"
+                    exit 1
+                fi
+                shift
+                ;;
+        esac
+    done
 
     if [[ -z "$target" ]]; then
-        print_error "Bitte Host angeben: vps backup restore <host> [snapshot]"
+        print_error "Bitte Host angeben: vps backup restore <host> [snapshot] [--service <name>] [--path <pfad>]"
+        exit 1
+    fi
+
+    if [[ -n "$service" && -n "$restore_path" ]]; then
+        print_error "--service und --path können nicht gleichzeitig verwendet werden"
         exit 1
     fi
 
@@ -2970,9 +3014,15 @@ cmd_backup_restore() {
     fi
     snapshot="${snapshot:-latest}"
 
-    # Warnung und Bestätigung
+    # Restore-Modus bestimmen und Bestätigung einholen
     echo ""
-    print_warning "ACHTUNG: Dies stellt Daten auf ${target} ($ip) wieder her!"
+    if [[ -n "$service" ]]; then
+        print_warning "ACHTUNG: Dienst '${service}' auf ${target} ($ip) wird wiederhergestellt!"
+    elif [[ -n "$restore_path" ]]; then
+        print_warning "ACHTUNG: Pfad '${restore_path}' auf ${target} ($ip) wird wiederhergestellt!"
+    else
+        print_warning "ACHTUNG: Dies stellt den GESAMTEN VPS ${target} ($ip) wieder her!"
+    fi
     print_warning "Vorhandene Dateien werden überschrieben!"
     echo ""
     read -rp "Bist du sicher? (ja/nein): " confirm
@@ -2982,51 +3032,143 @@ cmd_backup_restore() {
     fi
 
     echo ""
-    echo "=== Restore auf $target ==="
 
-    # Docker-Dienste stoppen
-    echo "Stoppe Docker-Dienste..."
-    ssh_exec "$ip" "sudo docker ps -q 2>/dev/null | xargs -r sudo docker stop" 2>/dev/null || true
+    if [[ -n "$service" ]]; then
+        # === Service-spezifischer Restore ===
+        echo "=== Service-Restore: ${service} auf $target ==="
 
-    # Restore ausführen
-    echo "Stelle Snapshot ${snapshot} wieder her..."
-    ssh_exec "$ip" "sudo bash -c 'source /etc/restic/env && export RESTIC_REPOSITORY RESTIC_PASSWORD_FILE && restic restore ${snapshot} --target /'"
+        local include_paths=""
+        local db_dump=""
+        local db_container=""
+        local db_user=""
+        local db_type=""
+        local compose_dir=""
 
-    # Datenbank-Restores
-    echo "Prüfe Datenbank-Restores..."
+        case "$service" in
+            paperless)
+                include_paths="/opt/paperless-ngx /tmp/backups/paperless-db.sql"
+                db_dump="/tmp/backups/paperless-db.sql"
+                db_container="paperless-ngx-db"
+                db_user="paperless"
+                db_type="postgres"
+                compose_dir="/opt/paperless-ngx"
+                ;;
+            guacamole)
+                include_paths="/opt/guacamole /tmp/backups/guacamole-db.sql"
+                db_dump="/tmp/backups/guacamole-db.sql"
+                db_container="guacamole-db"
+                db_user="guacamole"
+                db_type="postgres"
+                compose_dir="/opt/guacamole"
+                ;;
+            uptime-kuma)
+                include_paths="/opt/uptime-kuma /tmp/backups/kuma.db"
+                db_dump="/tmp/backups/kuma.db"
+                db_type="sqlite"
+                compose_dir="/opt/uptime-kuma"
+                ;;
+            *)
+                print_error "Unbekannter Dienst: ${service}"
+                echo "Verfügbare Dienste: paperless, guacamole, uptime-kuma"
+                exit 1
+                ;;
+        esac
 
-    # Paperless-ngx
-    if ssh_exec "$ip" "test -f /tmp/backups/paperless-db.sql" 2>/dev/null; then
-        echo "Stelle Paperless-ngx Datenbank wieder her..."
-        ssh_exec "$ip" "cd /opt/paperless-ngx && sudo docker compose up -d db && sleep 5 && sudo docker exec -i paperless-ngx-db psql -U paperless < /tmp/backups/paperless-db.sql"
-        print_success "Paperless-ngx DB wiederhergestellt."
+        # Dienst stoppen
+        echo "Stoppe ${service}..."
+        ssh_exec "$ip" "cd ${compose_dir} && sudo docker compose stop" 2>/dev/null || true
+
+        # Restic Restore mit --include für Service-Pfade
+        echo "Stelle Snapshot ${snapshot} für ${service} wieder her..."
+        local include_args=""
+        for p in $include_paths; do
+            include_args="${include_args} --include ${p}"
+        done
+        ssh_exec "$ip" "sudo bash -c 'source /etc/restic/env && export RESTIC_REPOSITORY RESTIC_PASSWORD_FILE && restic restore ${snapshot} --target / ${include_args}'"
+
+        # Datenbank-Restore
+        if ssh_exec "$ip" "test -f ${db_dump}" 2>/dev/null; then
+            echo "Stelle ${service} Datenbank wieder her..."
+            if [[ "$db_type" == "postgres" ]]; then
+                ssh_exec "$ip" "cd ${compose_dir} && sudo docker compose up -d db && sleep 5 && sudo docker exec -i ${db_container} psql -U ${db_user} < ${db_dump}"
+            elif [[ "$db_type" == "sqlite" ]]; then
+                ssh_exec "$ip" "sudo cp ${db_dump} /opt/uptime-kuma/data/kuma.db"
+            fi
+            print_success "${service} DB wiederhergestellt."
+        fi
+
+        # Dienst starten
+        echo "Starte ${service}..."
+        ssh_exec "$ip" "cd ${compose_dir} && sudo docker compose up -d"
+
+        echo ""
+        print_success "Service-Restore von ${service} auf ${target} abgeschlossen."
+        echo ""
+        echo "Bitte manuell prüfen:"
+        echo "  - Ist ${service} erreichbar?"
+        echo "  - Sind die Daten korrekt?"
+
+    elif [[ -n "$restore_path" ]]; then
+        # === Pfad-basierter Restore ===
+        echo "=== Pfad-Restore: ${restore_path} auf $target ==="
+
+        echo "Stelle Snapshot ${snapshot} für Pfad ${restore_path} wieder her..."
+        ssh_exec "$ip" "sudo bash -c 'source /etc/restic/env && export RESTIC_REPOSITORY RESTIC_PASSWORD_FILE && restic restore ${snapshot} --target / --include ${restore_path}'"
+
+        echo ""
+        print_success "Pfad-Restore von ${restore_path} auf ${target} abgeschlossen."
+        echo ""
+        echo "Bitte manuell prüfen:"
+        echo "  - Sind die wiederhergestellten Dateien korrekt?"
+
+    else
+        # === Ganzer VPS (bestehende Logik) ===
+        echo "=== Vollständiger Restore auf $target ==="
+
+        # Docker-Dienste stoppen
+        echo "Stoppe Docker-Dienste..."
+        ssh_exec "$ip" "sudo docker ps -q 2>/dev/null | xargs -r sudo docker stop" 2>/dev/null || true
+
+        # Restore ausführen
+        echo "Stelle Snapshot ${snapshot} wieder her..."
+        ssh_exec "$ip" "sudo bash -c 'source /etc/restic/env && export RESTIC_REPOSITORY RESTIC_PASSWORD_FILE && restic restore ${snapshot} --target /'"
+
+        # Datenbank-Restores
+        echo "Prüfe Datenbank-Restores..."
+
+        # Paperless-ngx
+        if ssh_exec "$ip" "test -f /tmp/backups/paperless-db.sql" 2>/dev/null; then
+            echo "Stelle Paperless-ngx Datenbank wieder her..."
+            ssh_exec "$ip" "cd /opt/paperless-ngx && sudo docker compose up -d db && sleep 5 && sudo docker exec -i paperless-ngx-db psql -U paperless < /tmp/backups/paperless-db.sql"
+            print_success "Paperless-ngx DB wiederhergestellt."
+        fi
+
+        # Guacamole
+        if ssh_exec "$ip" "test -f /tmp/backups/guacamole-db.sql" 2>/dev/null; then
+            echo "Stelle Guacamole Datenbank wieder her..."
+            ssh_exec "$ip" "cd /opt/guacamole && sudo docker compose up -d db && sleep 5 && sudo docker exec -i guacamole-db psql -U guacamole < /tmp/backups/guacamole-db.sql"
+            print_success "Guacamole DB wiederhergestellt."
+        fi
+
+        # Uptime Kuma (SQLite - Datei wurde direkt restored)
+        if ssh_exec "$ip" "test -f /tmp/backups/kuma.db" 2>/dev/null; then
+            echo "Stelle Uptime Kuma Datenbank wieder her..."
+            ssh_exec "$ip" "sudo cp /tmp/backups/kuma.db /opt/uptime-kuma/data/kuma.db"
+            print_success "Uptime Kuma DB wiederhergestellt."
+        fi
+
+        # Docker-Dienste starten
+        echo "Starte Docker-Dienste..."
+        ssh_exec "$ip" "for compose in /opt/*/docker-compose.yml; do dir=\$(dirname \"\$compose\"); echo \"Starte \$dir...\"; cd \"\$dir\" && sudo docker compose up -d; done" 2>/dev/null || true
+
+        echo ""
+        print_success "Restore auf ${target} abgeschlossen."
+        echo ""
+        echo "Bitte manuell prüfen:"
+        echo "  - Sind alle Dienste erreichbar?"
+        echo "  - Sind die Daten korrekt?"
+        echo "  - Funktionieren die Datenbanken?"
     fi
-
-    # Guacamole
-    if ssh_exec "$ip" "test -f /tmp/backups/guacamole-db.sql" 2>/dev/null; then
-        echo "Stelle Guacamole Datenbank wieder her..."
-        ssh_exec "$ip" "cd /opt/guacamole && sudo docker compose up -d db && sleep 5 && sudo docker exec -i guacamole-db psql -U guacamole < /tmp/backups/guacamole-db.sql"
-        print_success "Guacamole DB wiederhergestellt."
-    fi
-
-    # Uptime Kuma (SQLite - Datei wurde direkt restored)
-    if ssh_exec "$ip" "test -f /tmp/backups/kuma.db" 2>/dev/null; then
-        echo "Stelle Uptime Kuma Datenbank wieder her..."
-        ssh_exec "$ip" "sudo cp /tmp/backups/kuma.db /opt/uptime-kuma/data/kuma.db"
-        print_success "Uptime Kuma DB wiederhergestellt."
-    fi
-
-    # Docker-Dienste starten
-    echo "Starte Docker-Dienste..."
-    ssh_exec "$ip" "for compose in /opt/*/docker-compose.yml; do dir=\$(dirname \"\$compose\"); echo \"Starte \$dir...\"; cd \"\$dir\" && sudo docker compose up -d; done" 2>/dev/null || true
-
-    echo ""
-    print_success "Restore auf ${target} abgeschlossen."
-    echo ""
-    echo "Bitte manuell prüfen:"
-    echo "  - Sind alle Dienste erreichbar?"
-    echo "  - Sind die Daten korrekt?"
-    echo "  - Funktionieren die Datenbanken?"
 }
 
 cmd_backup_help() {
@@ -3042,8 +3184,13 @@ Befehle:
   status [host|all]         Backup-Status anzeigen (Timer, letztes Backup)
   forget <host|all>         Retention Policy anwenden + Prune
   check                     Repository-Integrität prüfen
-  restore <host> [snapshot] Wiederherstellung (interaktiv)
-  help                      Diese Hilfe anzeigen
+  restore <host> [snapshot] [optionen]  Wiederherstellung
+  help                                Diese Hilfe anzeigen
+
+Restore-Optionen:
+  --service <name>     Nur einen Dienst wiederherstellen (paperless, guacamole, uptime-kuma)
+  --path <pfad>        Nur einen bestimmten Pfad wiederherstellen
+  (ohne Optionen)      Ganzer VPS (alle Dienste, alle Daten)
 
 Setup:
   Beim ersten Aufruf von 'vps backup setup' werden die Hetzner Storage Box
@@ -3072,7 +3219,9 @@ Beispiele:
   vps backup status all             # Status aller Hosts
   vps backup forget all             # Alte Snapshots aufräumen
   vps backup check                  # Repository prüfen
-  vps backup restore webserver      # Wiederherstellung (interaktiv)
+  vps backup restore webserver      # Ganzer VPS (interaktiv)
+  vps backup restore webserver --service paperless      # Nur Paperless
+  vps backup restore webserver latest --path /opt/traefik/  # Nur Pfad
 
 Konfiguration:
   Proxy: ~/.config/vps-cli/backup   (Storage Box Zugangsdaten)
@@ -3171,7 +3320,7 @@ Backup (Restic + Hetzner Storage Box):
   backup status [host|all]          Backup-Status anzeigen
   backup forget <host|all>          Alte Snapshots aufräumen (Prune)
   backup check                      Repository-Integrität prüfen
-  backup restore <host> [snapshot]  Wiederherstellung (interaktiv)
+  backup restore <host> [snapshot] [--service|--path]  Wiederherstellung
   backup help                       Zeigt Backup-Hilfe
 
   help                              Zeigt diese Hilfe
@@ -3197,7 +3346,8 @@ Beispiele:
   vps backup setup all               # Backup auf allen Hosts
   vps backup run webserver           # Backup sofort ausführen
   vps backup status all              # Backup-Status anzeigen
-  vps backup restore webserver       # Wiederherstellung (interaktiv)
+  vps backup restore webserver       # Ganzer VPS wiederherstellen
+  vps backup restore ws --service paperless  # Nur Paperless
 
 Konfiguration:
   Hosts-Datei: /etc/vps-hosts
