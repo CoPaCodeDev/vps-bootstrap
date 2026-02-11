@@ -1,0 +1,10 @@
+[Unit]
+Description=Restic Backup
+After=network-online.target docker.service
+Wants=network-online.target
+
+[Service]
+Type=oneshot
+ExecStart=/usr/local/bin/vps-backup.sh backup
+Nice=10
+IOSchedulingClass=idle
