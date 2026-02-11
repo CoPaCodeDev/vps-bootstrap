@@ -2982,6 +2982,21 @@ cmd_backup_list() {
     fi
 }
 
+cmd_backup_files() {
+    local target="${1:-}"
+    local snapshot="${2:-latest}"
+
+    if [[ -z "$target" ]]; then
+        print_error "Bitte Host angeben: vps backup files <host> [snapshot]"
+        exit 1
+    fi
+
+    local ip=$(resolve_host "$target")
+
+    echo "=== Dateien in Snapshot '${snapshot}' auf $target ==="
+    ssh_exec "$ip" "sudo bash -c 'source /etc/restic/env && export RESTIC_REPOSITORY RESTIC_PASSWORD_FILE && restic ls ${snapshot} --host \$(hostname)'" | grep -v "^snapshot " | grep -v "^$"
+}
+
 cmd_backup_status() {
     local target="${1:-}"
 
@@ -3343,6 +3358,7 @@ Beispiele:
   vps backup setup all              # Backup auf allen Hosts einrichten
   vps backup run webserver          # Backup sofort ausführen
   vps backup list webserver         # Snapshots für webserver anzeigen
+  vps backup files webserver        # Dateien im letzten Snapshot anzeigen
   vps backup status all             # Status aller Hosts
   vps backup forget all             # Alte Snapshots aufräumen
   vps backup check                  # Repository prüfen
@@ -3369,6 +3385,9 @@ cmd_backup() {
             ;;
         list|ls)
             cmd_backup_list "$@"
+            ;;
+        files)
+            cmd_backup_files "$@"
             ;;
         status|st)
             cmd_backup_status "$@"
@@ -3444,6 +3463,7 @@ Backup (Restic + Hetzner Storage Box):
   backup setup <host|all>           Backup einrichten (Restic + Timer)
   backup run <host|all>             Backup jetzt ausführen
   backup list [host]                Snapshots anzeigen
+  backup files <host> [snapshot]    Dateien in Snapshot anzeigen
   backup status [host|all]          Backup-Status anzeigen
   backup forget <host|all>          Alte Snapshots aufräumen (Prune)
   backup check                      Repository-Integrität prüfen
