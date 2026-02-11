@@ -2737,7 +2737,7 @@ sudo mkdir -p /etc/restic/pre-backup.d
 
 # Env-Datei
 sudo tee /etc/restic/env > /dev/null << ENVFILE
-RESTIC_REPOSITORY="sftp:${STORAGE_USER}@${STORAGE_HOST}:/restic-repo"
+RESTIC_REPOSITORY="sftp:${STORAGE_USER}@${STORAGE_HOST}:./restic-repo"
 RESTIC_PASSWORD_FILE="/etc/restic/password"
 ENVFILE
 sudo chmod 600 /etc/restic/env
