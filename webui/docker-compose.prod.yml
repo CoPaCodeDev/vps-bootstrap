@@ -1,0 +1,32 @@
+# Production Docker Compose
+# Deployment auf dem Proxy-Server (10.10.0.1)
+#
+# Starten mit: docker compose -f docker-compose.prod.yml up -d
+# Route erstellen: vps route add --auth dashboard.example.de proxy 8080
+
+services:
+  backend:
+    build: ./backend
+    command: uvicorn app.main:app --host 0.0.0.0 --port 8000 --workers 2
+    network_mode: host
+    user: "1000:1000"
+    volumes:
+      - /home/master/.ssh:/home/master/.ssh:ro
+      - /etc/vps-hosts:/etc/vps-hosts:ro
+      - /opt/vps:/opt/vps:ro
+      - /opt/traefik:/opt/traefik
+      - /opt/authelia:/opt/authelia
+      - /home/master/.config/vps-cli:/home/master/.config/vps-cli
+    environment:
+      - VPS_DASHBOARD_DEBUG=false
+    restart: unless-stopped
+
+  frontend:
+    build: ./frontend
+    ports:
+      - "8080:8080"
+    depends_on:
+      - backend
+    restart: unless-stopped
+    labels:
+      - "traefik.enable=false"

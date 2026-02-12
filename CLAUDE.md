@@ -8,7 +8,7 @@
 - Sudo ohne Passwort ist konfiguriert
 
 ## Dateien
-- vps-cli.sh — Das CLI-Tool (~3500 Zeilen, alle Befehle)
+- vps-cli.sh — Das CLI-Tool (~4300 Zeilen, alle Befehle)
 - bootstrap-proxy.sh — Ersteinrichtung des Proxy
 - bootstrap-vps.sh — Ersteinrichtung einzelner VPS
 - setup-proxy-key.sh — SSH-Key Generator für den Proxy
@@ -16,6 +16,15 @@
 - templates/ — App-Templates (guacamole, paperless-ngx, uptime-kuma, traefik)
 - docs/api/ — Netcup SCP OpenAPI-Spec und API-Referenz
 - /etc/vps-hosts — Liste der VPS (auf dem Proxy)
+- webui/ — Web-Dashboard (Vue 3 + FastAPI)
+
+## Web-Dashboard (webui/)
+- Backend: Python FastAPI (webui/backend/) — Async SSH, Background-Tasks, WebSocket
+- Frontend: Vue 3 + PrimeVue 4 (webui/frontend/) — SPA mit Aura-Theme
+- Auth: Authelia Forward-Auth via Traefik (Remote-User Header)
+- Dev: `docker compose up` in webui/
+- Prod: `docker compose -f docker-compose.prod.yml up -d` + `vps route add --auth dashboard.example.de proxy 8080`
+- API-Docs: http://localhost:8000/docs (Swagger UI)
 
 ## Netcup SCP REST API
 - OpenAPI-Spec: docs/api/netcup-scp-openapi.json
