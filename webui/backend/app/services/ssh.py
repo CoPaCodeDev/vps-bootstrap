@@ -16,28 +16,25 @@ async def run_ssh(
     """Führt einen SSH-Befehl auf einem Host aus.
 
     Gibt (exit_code, stdout, stderr) zurück.
-    Wenn host == proxy_host oder 'proxy', wird lokal ausgeführt.
+    Alle Befehle werden per SSH ausgeführt (auch Proxy-Befehle),
+    da das Backend in einem Container läuft.
     """
     effective_timeout = timeout or settings.ssh_timeout
 
-    if host in (settings.proxy_host, "proxy", "localhost"):
-        proc = await asyncio.create_subprocess_shell(
-            command,
-            stdout=asyncio.subprocess.PIPE,
-            stderr=asyncio.subprocess.PIPE,
-        )
-    else:
-        ssh_cmd = (
-            f"ssh -o StrictHostKeyChecking=no -o UserKnownHostsFile=/dev/null "
-            f"-o ConnectTimeout={effective_timeout} "
-            f"-o BatchMode=yes -i {settings.ssh_key_path} "
-            f"{settings.ssh_user}@{host} {shlex.quote(command)}"
-        )
-        proc = await asyncio.create_subprocess_shell(
-            ssh_cmd,
-            stdout=asyncio.subprocess.PIPE,
-            stderr=asyncio.subprocess.PIPE,
-        )
+    # "proxy" / "localhost" auf die echte Proxy-IP auflösen
+    target = settings.proxy_host if host in ("proxy", "localhost") else host
+
+    ssh_cmd = (
+        f"ssh -o StrictHostKeyChecking=no -o UserKnownHostsFile=/dev/null "
+        f"-o ConnectTimeout={effective_timeout} "
+        f"-o BatchMode=yes -i {settings.ssh_key_path} "
+        f"{settings.ssh_user}@{target} {shlex.quote(command)}"
+    )
+    proc = await asyncio.create_subprocess_shell(
+        ssh_cmd,
+        stdout=asyncio.subprocess.PIPE,
+        stderr=asyncio.subprocess.PIPE,
+    )
 
     try:
         stdout, stderr = await asyncio.wait_for(
@@ -63,24 +60,19 @@ async def run_ssh_stream(
     command: str,
 ) -> AsyncIterator[str]:
     """Führt einen SSH-Befehl aus und streamt die Ausgabe zeilenweise."""
-    if host in (settings.proxy_host, "proxy", "localhost"):
-        proc = await asyncio.create_subprocess_shell(
-            command,
-            stdout=asyncio.subprocess.PIPE,
-            stderr=asyncio.subprocess.STDOUT,
-        )
-    else:
-        ssh_cmd = (
-            f"ssh -o StrictHostKeyChecking=no -o UserKnownHostsFile=/dev/null "
-            f"-o ConnectTimeout={settings.ssh_timeout} "
-            f"-o BatchMode=yes -i {settings.ssh_key_path} "
-            f"{settings.ssh_user}@{host} {shlex.quote(command)}"
-        )
-        proc = await asyncio.create_subprocess_shell(
-            ssh_cmd,
-            stdout=asyncio.subprocess.PIPE,
-            stderr=asyncio.subprocess.STDOUT,
-        )
+    target = settings.proxy_host if host in ("proxy", "localhost") else host
+
+    ssh_cmd = (
+        f"ssh -o StrictHostKeyChecking=no -o UserKnownHostsFile=/dev/null "
+        f"-o ConnectTimeout={settings.ssh_timeout} "
+        f"-o BatchMode=yes -i {settings.ssh_key_path} "
+        f"{settings.ssh_user}@{target} {shlex.quote(command)}"
+    )
+    proc = await asyncio.create_subprocess_shell(
+        ssh_cmd,
+        stdout=asyncio.subprocess.PIPE,
+        stderr=asyncio.subprocess.STDOUT,
+    )
 
     async for line in proc.stdout:
         yield line.decode("utf-8", errors="replace").rstrip("\n")
