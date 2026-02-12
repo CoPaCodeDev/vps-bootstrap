@@ -9,7 +9,8 @@ services:
   backend:
     build: ./backend
     command: uvicorn app.main:app --host 0.0.0.0 --port 8000 --workers 2
-    network_mode: host
+    networks:
+      - traefik
     user: "1000:1000"
     volumes:
       - /home/master/.ssh:/home/master/.ssh:ro
@@ -24,8 +25,6 @@ services:
 
   frontend:
     build: ./frontend
-    extra_hosts:
-      - "host.docker.internal:host-gateway"
     networks:
       - traefik
     labels:
