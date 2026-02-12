@@ -23,10 +23,7 @@ services:
 
   frontend:
     build: ./frontend
-    ports:
-      - "8080:8080"
+    network_mode: host
     depends_on:
       - backend
     restart: unless-stopped
-    labels:
-      - "traefik.enable=false"
