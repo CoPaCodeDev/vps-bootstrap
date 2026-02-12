@@ -2,7 +2,8 @@
 # Deployment auf dem Proxy-Server (10.10.0.1)
 #
 # Starten mit: docker compose -f docker-compose.prod.yml up -d
-# Route erstellen: vps route add --auth dashboard.example.de proxy 8080
+# Danach Route löschen falls vorhanden: rm /opt/traefik/conf.d/dash*.yml
+# Traefik-Labels übernehmen das Routing automatisch.
 
 services:
   backend:
@@ -23,7 +24,20 @@ services:
 
   frontend:
     build: ./frontend
-    network_mode: host
+    extra_hosts:
+      - "host.docker.internal:host-gateway"
+    networks:
+      - traefik
+    labels:
+      - "traefik.enable=true"
+      - "traefik.http.routers.dashboard.rule=Host(`${DASHBOARD_DOMAIN}`)"
+      - "traefik.http.routers.dashboard.entrypoints=websecure"
+      - "traefik.http.routers.dashboard.tls.certresolver=letsencrypt"
+      - "traefik.http.services.dashboard.loadbalancer.server.port=8080"
     depends_on:
       - backend
     restart: unless-stopped
+
+networks:
+  traefik:
+    external: true
