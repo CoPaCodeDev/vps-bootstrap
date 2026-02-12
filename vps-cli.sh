@@ -977,9 +977,12 @@ cmd_authelia() {
         user)
             cmd_authelia_user "$@"
             ;;
+        domain)
+            cmd_authelia_domain "$@"
+            ;;
         *)
             print_error "Unbekannter Authelia-Befehl: $subcmd"
-            echo "Verwendung: vps authelia <setup|status|logs|restart|user>"
+            echo "Verwendung: vps authelia <setup|status|logs|restart|user|domain>"
             exit 1
             ;;
     esac
@@ -1007,13 +1010,29 @@ cmd_authelia_setup() {
         read -p "Authelia-Domain (z.B. auth.example.de): " auth_domain
     done
 
-    # Cookie-Domain abfragen
+    # Cookie-Domains abfragen (Multi-Domain-Support)
     echo ""
-    echo "Die Cookie-Domain bestimmt, für welche Subdomains SSO gilt."
+    echo "Die Cookie-Domains bestimmen, für welche Domains SSO gilt."
     echo "Beispiel: Für app.example.de und docs.example.de -> example.de"
+    echo "Du kannst mehrere Domains angeben (z.B. firma.de und privat.de)."
+    echo ""
+    local cookie_domains=()
     local cookie_domain=""
-    while [[ -z "$cookie_domain" ]]; do
-        read -p "Cookie-Domain (z.B. example.de): " cookie_domain
+    while true; do
+        local prompt_text="Cookie-Domain"
+        if [[ ${#cookie_domains[@]} -gt 0 ]]; then
+            prompt_text="Weitere Cookie-Domain (leer = fertig)"
+        fi
+        read -p "${prompt_text} (z.B. example.de): " cookie_domain
+        if [[ -z "$cookie_domain" ]]; then
+            if [[ ${#cookie_domains[@]} -eq 0 ]]; then
+                print_error "Mindestens eine Cookie-Domain ist erforderlich."
+                continue
+            fi
+            break
+        fi
+        cookie_domains+=("$cookie_domain")
+        echo "  -> $cookie_domain hinzugefügt (${#cookie_domains[@]} Domain(s))"
     done
 
     # Admin-User erstellen
@@ -1052,7 +1071,10 @@ cmd_authelia_setup() {
     echo ""
     echo "Zusammenfassung:"
     echo "  Authelia:       https://$auth_domain"
-    echo "  Cookie-Domain:  $cookie_domain"
+    echo "  Cookie-Domains:"
+    for d in "${cookie_domains[@]}"; do
+        echo "    - $d"
+    done
     echo "  Admin-User:     $admin_user ($admin_displayname)"
     echo "  E-Mail:         $admin_email"
     echo ""
@@ -1090,13 +1112,24 @@ cmd_authelia_setup() {
     sed "s/\${AUTH_DOMAIN}/${auth_domain}/g" \
         "${TEMPLATES_DIR}/authelia/docker-compose.yml" | proxy_write "${AUTHELIA_DIR}/docker-compose.yml"
 
+    # Cookie-Domains-Block generieren (Temp-Datei für Multiline-Ersetzung)
+    local cookie_block_file
+    cookie_block_file=$(mktemp)
+    for d in "${cookie_domains[@]}"; do
+        echo "    - domain: '${d}'" >> "$cookie_block_file"
+        echo "      authelia_url: 'https://${auth_domain}'" >> "$cookie_block_file"
+        echo "      default_redirection_url: 'https://${auth_domain}'" >> "$cookie_block_file"
+    done
+
     # configuration.yml
     sed -e "s|{{AUTH_DOMAIN}}|${auth_domain}|g" \
-        -e "s|{{COOKIE_DOMAIN}}|${cookie_domain}|g" \
         -e "s|{{SESSION_SECRET}}|${session_secret}|g" \
         -e "s|{{STORAGE_ENCRYPTION_KEY}}|${storage_key}|g" \
         -e "s|{{JWT_SECRET}}|${jwt_secret}|g" \
-        "${TEMPLATES_DIR}/authelia/configuration.yml" | proxy_write "${AUTHELIA_DIR}/config/configuration.yml"
+        "${TEMPLATES_DIR}/authelia/configuration.yml" | \
+        sed -e "/{{COOKIE_DOMAINS}}/{r ${cookie_block_file}" -e "d}" | \
+        proxy_write "${AUTHELIA_DIR}/config/configuration.yml"
+    rm -f "$cookie_block_file"
 
     # users_database.yml
     sed -e "s|{{ADMIN_USER}}|${admin_user}|g" \
@@ -1316,6 +1349,156 @@ cmd_authelia_user_remove() {
 # Prüft ob Authelia auf dem Proxy eingerichtet ist
 authelia_is_installed() {
     proxy_exec "test -f ${AUTHELIA_DIR}/docker-compose.yml" 2>/dev/null
+}
+
+# Authelia Domain-Verwaltung
+cmd_authelia_domain() {
+    local subcmd="$1"
+    shift 2>/dev/null || true
+
+    case "$subcmd" in
+        add)
+            cmd_authelia_domain_add "$@"
+            ;;
+        list|ls)
+            cmd_authelia_domain_list
+            ;;
+        remove|rm)
+            cmd_authelia_domain_remove "$@"
+            ;;
+        *)
+            print_error "Unbekannter Domain-Befehl: $subcmd"
+            echo "Verwendung: vps authelia domain <add|list|remove>"
+            exit 1
+            ;;
+    esac
+}
+
+cmd_authelia_domain_add() {
+    local config_file="${AUTHELIA_DIR}/config/configuration.yml"
+
+    if ! proxy_exec "test -f ${config_file}" 2>/dev/null; then
+        print_error "Authelia ist nicht eingerichtet. Führe zuerst 'vps authelia setup' aus."
+        exit 1
+    fi
+
+    local new_domain="$1"
+    if [[ -z "$new_domain" ]]; then
+        read -p "Neue Cookie-Domain (z.B. privat.de): " new_domain
+    fi
+
+    if [[ -z "$new_domain" ]]; then
+        print_error "Keine Domain angegeben."
+        exit 1
+    fi
+
+    # Prüfe ob Domain bereits existiert
+    if proxy_exec "grep -q \"domain: '${new_domain}'\" ${config_file}" 2>/dev/null; then
+        print_error "Domain '$new_domain' ist bereits konfiguriert."
+        exit 1
+    fi
+
+    # Authelia-URL aus bestehender Config lesen
+    local auth_url
+    auth_url=$(proxy_exec "grep 'authelia_url:' ${config_file} | head -1 | sed \"s/.*authelia_url: '\\(.*\\)'/\\1/\"" 2>/dev/null)
+    if [[ -z "$auth_url" ]]; then
+        print_error "Konnte Authelia-URL nicht aus der Konfiguration lesen."
+        exit 1
+    fi
+
+    echo "Füge Domain '$new_domain' hinzu..."
+    echo "  Authelia-URL: $auth_url"
+    echo ""
+    read -p "Fortfahren? [J/n] " confirm
+    if [[ "$confirm" =~ ^[nN]$ ]]; then
+        echo "Abgebrochen."
+        exit 0
+    fi
+
+    # Neuen Cookie-Block vor dem redis:-Abschnitt einfügen
+    proxy_exec "sed -i '/^  redis:/i\\    - domain: '\''${new_domain}'\''\\n      authelia_url: '\''${auth_url}'\''\\n      default_redirection_url: '\''${auth_url}'\''' ${config_file}"
+
+    # Authelia neu starten
+    echo "Starte Authelia neu..."
+    proxy_exec "cd ${AUTHELIA_DIR} && docker compose restart"
+
+    print_success "Domain '$new_domain' hinzugefügt."
+    echo ""
+    echo "Hinweis: DNS-Einträge für Subdomains von '$new_domain' müssen auf die Proxy-Public-IP zeigen."
+}
+
+cmd_authelia_domain_list() {
+    local config_file="${AUTHELIA_DIR}/config/configuration.yml"
+
+    if ! proxy_exec "test -f ${config_file}" 2>/dev/null; then
+        print_error "Authelia ist nicht eingerichtet."
+        exit 1
+    fi
+
+    echo "Konfigurierte Cookie-Domains:"
+    echo ""
+
+    local domains
+    domains=$(proxy_exec "grep \"domain: '\" ${config_file} | sed \"s/.*domain: '\\(.*\\)'/\\1/\"" 2>/dev/null)
+
+    if [[ -z "$domains" ]]; then
+        echo "  Keine Domains konfiguriert."
+        return
+    fi
+
+    local i=1
+    while IFS= read -r domain; do
+        echo "  ${i}. ${domain}"
+        ((i++))
+    done <<< "$domains"
+
+    echo ""
+    echo "Gesamt: $((i - 1)) Domain(s)"
+}
+
+cmd_authelia_domain_remove() {
+    local config_file="${AUTHELIA_DIR}/config/configuration.yml"
+
+    if ! proxy_exec "test -f ${config_file}" 2>/dev/null; then
+        print_error "Authelia ist nicht eingerichtet."
+        exit 1
+    fi
+
+    local domain="$1"
+    if [[ -z "$domain" ]]; then
+        print_error "Verwendung: vps authelia domain remove <domain>"
+        exit 1
+    fi
+
+    # Prüfe ob Domain existiert
+    if ! proxy_exec "grep -q \"domain: '${domain}'\" ${config_file}" 2>/dev/null; then
+        print_error "Domain '$domain' ist nicht konfiguriert."
+        exit 1
+    fi
+
+    # Prüfe ob es die letzte Domain wäre
+    local domain_count
+    domain_count=$(proxy_exec "grep -c \"domain: '\" ${config_file}" 2>/dev/null)
+    if [[ "$domain_count" -le 1 ]]; then
+        print_error "Kann die letzte Domain nicht entfernen. Mindestens eine Cookie-Domain ist erforderlich."
+        exit 1
+    fi
+
+    print_warning "Domain '$domain' wird entfernt."
+    read -p "Fortfahren? [j/N] " confirm
+
+    if [[ "$confirm" =~ ^[jJyY]$ ]]; then
+        # Lösche den 3-Zeilen Cookie-Block (domain + authelia_url + default_redirection_url)
+        proxy_exec "sed -i \"/domain: '${domain}'/,+2d\" ${config_file}"
+
+        # Authelia neu starten
+        echo "Starte Authelia neu..."
+        proxy_exec "cd ${AUTHELIA_DIR} && docker compose restart"
+
+        print_success "Domain '$domain' entfernt."
+    else
+        echo "Abgebrochen."
+    fi
 }
 
 # === DEPLOY ===
@@ -3980,6 +4163,9 @@ Authelia (Proxy-Auth):
   authelia user add                 Neuen Benutzer hinzufügen
   authelia user list                Benutzer anzeigen
   authelia user remove <user>       Benutzer entfernen
+  authelia domain add [domain]      Cookie-Domain hinzufügen
+  authelia domain list              Cookie-Domains anzeigen
+  authelia domain remove <domain>   Cookie-Domain entfernen
 
 Deployment:
   deploy <template> <host>          Deployed ein Template auf einen Host
@@ -4024,6 +4210,8 @@ Beispiele:
   vps authelia setup                     # Authelia einrichten
   vps authelia user add                  # Benutzer hinzufügen
   vps authelia user list                 # Benutzer anzeigen
+  vps authelia domain add privat.de      # Weitere Domain hinzufügen
+  vps authelia domain list               # Domains anzeigen
   vps deploy list                   # Verfügbare Templates
   vps deploy uptime-kuma webserver  # App deployen
   vps deploy status webserver       # Deployments anzeigen
