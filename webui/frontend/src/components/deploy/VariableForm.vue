@@ -53,7 +53,7 @@ function update(name: string, value: string) {
       <InputText
         v-else-if="v.type !== 'generate'"
         :modelValue="modelValue[v.name] || v.default || ''"
-        @update:modelValue="update(v.name, $event)"
+        @update:modelValue="update(v.name, $event ?? '')"
         :placeholder="v.default || v.description"
         class="w-full"
         :disabled="v.type === 'generate'"
