@@ -11,6 +11,15 @@ from ..services.task_manager import task_manager
 
 router = APIRouter(prefix="/backup", tags=["Backup"])
 
+# Restic-Befehle brauchen die Env-Variablen aus /etc/restic/env
+RESTIC_PREFIX = "sudo bash -c 'source /etc/restic/env && export RESTIC_REPOSITORY RESTIC_PASSWORD_FILE && "
+RESTIC_SUFFIX = "'"
+
+
+def _restic_cmd(cmd: str) -> str:
+    """Wraps einen Restic-Befehl mit source /etc/restic/env."""
+    return f"{RESTIC_PREFIX}{cmd}{RESTIC_SUFFIX}"
+
 
 @router.get("/status", response_model=list[BackupStatus])
 async def backup_status(user: str = Depends(get_current_user)):
@@ -19,13 +28,12 @@ async def backup_status(user: str = Depends(get_current_user)):
     import asyncio
 
     hosts = parse_hosts_file()
-    results = []
 
     async def check_backup(vps):
-        # Prüfe ob Restic-Repo existiert
+        # Prüfe ob Restic-Env existiert
         code, stdout, _ = await run_ssh(
-            "proxy",
-            f"restic -r sftp:{vps.ip}:/backup snapshots --json --latest 1 2>/dev/null",
+            vps.ip,
+            _restic_cmd("restic snapshots --json --latest 1 2>/dev/null"),
             timeout=30,
         )
 
@@ -38,8 +46,8 @@ async def backup_status(user: str = Depends(get_current_user)):
 
             # Repo-Größe
             code2, stats_out, _ = await run_ssh(
-                "proxy",
-                f"restic -r sftp:{vps.ip}:/backup stats --json 2>/dev/null",
+                vps.ip,
+                _restic_cmd("restic stats --json 2>/dev/null"),
                 timeout=30,
             )
             repo_size = ""
@@ -50,8 +58,8 @@ async def backup_status(user: str = Depends(get_current_user)):
 
             # Snapshot-Anzahl
             code3, all_out, _ = await run_ssh(
-                "proxy",
-                f"restic -r sftp:{vps.ip}:/backup snapshots --json 2>/dev/null",
+                vps.ip,
+                _restic_cmd("restic snapshots --json 2>/dev/null"),
                 timeout=30,
             )
             snapshot_count = 0
@@ -82,8 +90,8 @@ async def list_snapshots(host: str, user: str = Depends(get_current_user)):
         raise HTTPException(status_code=404, detail=f"Host '{host}' nicht gefunden")
 
     code, stdout, _ = await run_ssh(
-        "proxy",
-        f"restic -r sftp:{ip}:/backup snapshots --json 2>/dev/null",
+        ip,
+        _restic_cmd("restic snapshots --json 2>/dev/null"),
         timeout=30,
     )
 
@@ -120,8 +128,8 @@ async def list_files(
         raise HTTPException(status_code=404, detail=f"Host '{host}' nicht gefunden")
 
     code, stdout, _ = await run_ssh(
-        "proxy",
-        f"restic -r sftp:{ip}:/backup ls {snapshot} {path} --json 2>/dev/null",
+        ip,
+        _restic_cmd(f"restic ls {snapshot} {path} --json 2>/dev/null"),
         timeout=30,
     )
 
@@ -151,8 +159,8 @@ async def run_backup(host: str, user: str = Depends(get_current_user)):
     async def do_backup(task_id: str):
         await task_manager.push_output(task_id, f"Starte Backup für {host} ({ip})...")
         async for line in run_ssh_stream(
-            "proxy",
-            f"restic -r sftp:{ip}:/backup backup /opt --verbose 2>&1",
+            ip,
+            _restic_cmd("restic backup /opt --verbose 2>&1"),
         ):
             await task_manager.push_output(task_id, line)
         await task_manager.push_output(task_id, "Backup abgeschlossen.")
@@ -180,11 +188,11 @@ async def restore_backup(
             task_id, f"Stelle Snapshot {req.snapshot_id} auf {host} wieder her..."
         )
         paths_arg = " ".join(f"--include {p}" for p in req.paths) if req.paths else ""
-        cmd = (
-            f"restic -r sftp:{ip}:/backup restore {req.snapshot_id} "
+        cmd = _restic_cmd(
+            f"restic restore {req.snapshot_id} "
             f"--target {target} {paths_arg} --verbose 2>&1"
         )
-        async for line in run_ssh_stream("proxy", cmd):
+        async for line in run_ssh_stream(ip, cmd):
             await task_manager.push_output(task_id, line)
         await task_manager.push_output(task_id, "Wiederherstellung abgeschlossen.")
 
@@ -210,15 +218,15 @@ async def forget_snapshots(
 
     async def do_forget(task_id: str):
         await task_manager.push_output(task_id, f"Bereinige Snapshots für {host}...")
-        cmd = (
-            f"restic -r sftp:{ip}:/backup forget "
+        cmd = _restic_cmd(
+            f"restic forget "
             f"--keep-last {req.keep_last} "
             f"--keep-daily {req.keep_daily} "
             f"--keep-weekly {req.keep_weekly} "
             f"--keep-monthly {req.keep_monthly} "
             f"--prune --verbose 2>&1"
         )
-        async for line in run_ssh_stream("proxy", cmd):
+        async for line in run_ssh_stream(ip, cmd):
             await task_manager.push_output(task_id, line)
         await task_manager.push_output(task_id, "Bereinigung abgeschlossen.")
 
