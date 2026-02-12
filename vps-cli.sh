@@ -1114,7 +1114,11 @@ cmd_authelia_setup() {
     echo "  Authelia:       https://$auth_domain"
     echo "  Cookie-Domains:"
     for d in "${cookie_domains[@]}"; do
-        echo "    - $d"
+        echo "    - $d (auth: auth.${d})"
+    done
+    echo "  DNS benötigt:"
+    for d in "${cookie_domains[@]}"; do
+        echo "    - auth.${d} -> Proxy-Public-IP"
     done
     echo "  Admin-User:     $admin_user ($admin_displayname)"
     echo "  E-Mail:         $admin_email"
@@ -1149,8 +1153,17 @@ cmd_authelia_setup() {
     # Konfigurationsdateien kopieren
     echo "Kopiere Konfigurationsdateien..."
 
+    # Traefik Host-Rule für alle Auth-Domains generieren
+    local auth_hosts_rule="Host(\`${auth_domain}\`)"
+    for d in "${cookie_domains[@]}"; do
+        local ad="auth.${d}"
+        if [[ "$ad" != "$auth_domain" ]]; then
+            auth_hosts_rule="${auth_hosts_rule} || Host(\`${ad}\`)"
+        fi
+    done
+
     # docker-compose.yml
-    sed "s/\${AUTH_DOMAIN}/${auth_domain}/g" \
+    sed -e "s#\${AUTH_HOSTS_RULE}#${auth_hosts_rule}#g" \
         "${TEMPLATES_DIR}/authelia/docker-compose.yml" | proxy_write "${AUTHELIA_DIR}/docker-compose.yml"
 
     # Cookie-Domains-Block generieren (Temp-Datei für Multiline-Ersetzung)
@@ -1206,7 +1219,10 @@ cmd_authelia_setup() {
     echo "Portal: https://$auth_domain"
     echo "Login:  $admin_user / ********"
     echo ""
-    echo "Hinweis: DNS-Eintrag für '$auth_domain' muss auf die Proxy-Public-IP zeigen."
+    echo "Hinweis: DNS-Einträge müssen auf die Proxy-Public-IP zeigen:"
+    for d in "${cookie_domains[@]}"; do
+        echo "  - auth.${d}"
+    done
     echo ""
     echo "Routen mit Authelia absichern:"
     echo "  vps route add --auth <domain> <host> <port>    # Neue Route mit Auth"
