@@ -1158,8 +1158,8 @@ cmd_authelia_setup() {
     cookie_block_file=$(mktemp)
     for d in "${cookie_domains[@]}"; do
         echo "    - domain: '${d}'" >> "$cookie_block_file"
-        echo "      authelia_url: 'https://${auth_domain}'" >> "$cookie_block_file"
-        echo "      default_redirection_url: 'https://${auth_domain}'" >> "$cookie_block_file"
+        echo "      authelia_url: 'https://auth.${d}'" >> "$cookie_block_file"
+        echo "      default_redirection_url: 'https://${d}'" >> "$cookie_block_file"
     done
 
     # configuration.yml
@@ -1457,7 +1457,7 @@ cmd_authelia_domain_add() {
     fi
 
     # Neuen Cookie-Block vor dem redis:-Abschnitt einfügen
-    proxy_exec "sudo sed -i '/^  redis:/i\\    - domain: '\''${new_domain}'\''\\n      authelia_url: '\''${auth_url}'\''\\n      default_redirection_url: '\''${auth_url}'\''' ${config_file}"
+    proxy_exec "sudo sed -i '/^  redis:/i\\    - domain: '\''${new_domain}'\''\\n      authelia_url: '\''https://auth.${new_domain}'\''\\n      default_redirection_url: '\''https://${new_domain}'\''' ${config_file}"
 
     # Authelia neu starten
     echo "Starte Authelia neu..."
