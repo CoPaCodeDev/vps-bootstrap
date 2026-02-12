@@ -1338,7 +1338,7 @@ cmd_authelia_user_remove() {
 
     if [[ "$confirm" =~ ^[jJyY]$ ]]; then
         # Lösche Benutzerblock (Username-Zeile + 4 Eigenschaftszeilen)
-        proxy_exec "sed -i '/^  ${username}:$/,+4d' ${users_file}"
+        proxy_exec "sudo sed -i '/^  ${username}:$/,+4d' ${users_file}"
         print_success "Benutzer '$username' entfernt."
         echo "Authelia erkennt die Änderung automatisch."
     else
@@ -1416,7 +1416,7 @@ cmd_authelia_domain_add() {
     fi
 
     # Neuen Cookie-Block vor dem redis:-Abschnitt einfügen
-    proxy_exec "sed -i '/^  redis:/i\\    - domain: '\''${new_domain}'\''\\n      authelia_url: '\''${auth_url}'\''\\n      default_redirection_url: '\''${auth_url}'\''' ${config_file}"
+    proxy_exec "sudo sed -i '/^  redis:/i\\    - domain: '\''${new_domain}'\''\\n      authelia_url: '\''${auth_url}'\''\\n      default_redirection_url: '\''${auth_url}'\''' ${config_file}"
 
     # Authelia neu starten
     echo "Starte Authelia neu..."
@@ -1489,7 +1489,7 @@ cmd_authelia_domain_remove() {
 
     if [[ "$confirm" =~ ^[jJyY]$ ]]; then
         # Lösche den 3-Zeilen Cookie-Block (domain + authelia_url + default_redirection_url)
-        proxy_exec "sed -i \"/domain: '${domain}'/,+2d\" ${config_file}"
+        proxy_exec "sudo sed -i \"/domain: '${domain}'/,+2d\" ${config_file}"
 
         # Authelia neu starten
         echo "Starte Authelia neu..."
