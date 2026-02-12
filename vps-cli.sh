@@ -980,12 +980,53 @@ cmd_authelia() {
         domain)
             cmd_authelia_domain "$@"
             ;;
+        help|"")
+            cmd_authelia_help
+            ;;
         *)
             print_error "Unbekannter Authelia-Befehl: $subcmd"
-            echo "Verwendung: vps authelia <setup|status|logs|restart|user|domain>"
+            cmd_authelia_help
             exit 1
             ;;
     esac
+}
+
+cmd_authelia_help() {
+    echo "=== Authelia - Single Sign-On (SSO) ==="
+    echo ""
+    echo "Authelia stellt zentrale Authentifizierung für alle Services bereit."
+    echo "Einmal einloggen, überall angemeldet — auch über mehrere Domains."
+    echo ""
+    echo "Einrichtung:"
+    echo "  vps authelia setup                     Interaktive Ersteinrichtung"
+    echo ""
+    echo "Status & Verwaltung:"
+    echo "  vps authelia status                    Container-Status anzeigen"
+    echo "  vps authelia logs [zeilen]             Logs anzeigen (Standard: 50)"
+    echo "  vps authelia restart                   Authelia neu starten"
+    echo ""
+    echo "Benutzerverwaltung:"
+    echo "  vps authelia user add                  Neuen Benutzer anlegen"
+    echo "  vps authelia user list                 Alle Benutzer anzeigen"
+    echo "  vps authelia user remove <user>        Benutzer entfernen"
+    echo ""
+    echo "Domain-Verwaltung (Multi-Domain SSO):"
+    echo "  vps authelia domain add [domain]       Cookie-Domain hinzufügen"
+    echo "  vps authelia domain list               Konfigurierte Domains anzeigen"
+    echo "  vps authelia domain remove <domain>    Cookie-Domain entfernen"
+    echo ""
+    echo "Routen absichern:"
+    echo "  vps route add --auth <domain> <host> <port>   Neue Route mit Auth"
+    echo "  vps route auth <domain>                       Auth für Route aktivieren"
+    echo "  vps route noauth <domain>                     Auth für Route deaktivieren"
+    echo ""
+    echo "Beispiel — Mehrere Domains:"
+    echo "  vps authelia setup                     # Setup mit firma.de"
+    echo "  vps authelia domain add privat.de      # privat.de nachträglich hinzufügen"
+    echo "  vps authelia domain list               # Alle Domains anzeigen"
+    echo "  vps route add --auth app.privat.de webserver 8080"
+    echo ""
+    echo "Hinweis: DNS-Einträge müssen auf die Proxy-Public-IP zeigen."
 }
 
 cmd_authelia_setup() {
@@ -1264,7 +1305,7 @@ cmd_authelia_user_add() {
     fi
 
     # User zur Datei hinzufügen
-    proxy_exec "cat >> ${users_file} << USEREOF
+    proxy_exec "sudo tee -a ${users_file} > /dev/null << USEREOF
   ${username}:
     disabled: false
     displayname: '${displayname}'
