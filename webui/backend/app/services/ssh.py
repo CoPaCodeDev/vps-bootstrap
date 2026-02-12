@@ -1,8 +1,11 @@
 import asyncio
+import logging
 import shlex
 from typing import AsyncIterator
 
 from ..config import settings
+
+logger = logging.getLogger(__name__)
 
 
 async def run_ssh(
@@ -25,7 +28,8 @@ async def run_ssh(
         )
     else:
         ssh_cmd = (
-            f"ssh -o StrictHostKeyChecking=no -o ConnectTimeout={effective_timeout} "
+            f"ssh -o StrictHostKeyChecking=no -o UserKnownHostsFile=/dev/null "
+            f"-o ConnectTimeout={effective_timeout} "
             f"-o BatchMode=yes -i {settings.ssh_key_path} "
             f"{settings.ssh_user}@{host} {shlex.quote(command)}"
         )
@@ -41,13 +45,17 @@ async def run_ssh(
         )
     except asyncio.TimeoutError:
         proc.kill()
+        logger.warning("SSH timeout: %s", host)
         return -1, "", "Timeout"
 
-    return (
-        proc.returncode or 0,
-        stdout.decode("utf-8", errors="replace").strip(),
-        stderr.decode("utf-8", errors="replace").strip(),
-    )
+    rc = proc.returncode or 0
+    out = stdout.decode("utf-8", errors="replace").strip()
+    err = stderr.decode("utf-8", errors="replace").strip()
+
+    if rc != 0:
+        logger.warning("SSH failed (host=%s, rc=%d): %s", host, rc, err)
+
+    return rc, out, err
 
 
 async def run_ssh_stream(
@@ -63,7 +71,8 @@ async def run_ssh_stream(
         )
     else:
         ssh_cmd = (
-            f"ssh -o StrictHostKeyChecking=no -o ConnectTimeout={settings.ssh_timeout} "
+            f"ssh -o StrictHostKeyChecking=no -o UserKnownHostsFile=/dev/null "
+            f"-o ConnectTimeout={settings.ssh_timeout} "
             f"-o BatchMode=yes -i {settings.ssh_key_path} "
             f"{settings.ssh_user}@{host} {shlex.quote(command)}"
         )
