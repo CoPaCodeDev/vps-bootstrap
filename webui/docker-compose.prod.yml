@@ -32,7 +32,7 @@ services:
       - "traefik.http.routers.vps-webui.rule=Host(`${DASHBOARD_DOMAIN}`)"
       - "traefik.http.routers.vps-webui.entrypoints=websecure"
       - "traefik.http.routers.vps-webui.tls.certresolver=letsencrypt"
-      - "traefik.http.routers.vps-webui.middlewares=authelia@file"
+      - "traefik.http.routers.vps-webui.middlewares=${DASHBOARD_MIDDLEWARES:-}"
       - "traefik.http.services.vps-webui.loadbalancer.server.port=8080"
     depends_on:
       - backend
