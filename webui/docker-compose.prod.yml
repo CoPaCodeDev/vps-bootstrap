@@ -30,10 +30,10 @@ services:
       - traefik
     labels:
       - "traefik.enable=true"
-      - "traefik.http.routers.dashboard.rule=Host(`${DASHBOARD_DOMAIN}`)"
-      - "traefik.http.routers.dashboard.entrypoints=websecure"
-      - "traefik.http.routers.dashboard.tls.certresolver=letsencrypt"
-      - "traefik.http.services.dashboard.loadbalancer.server.port=8080"
+      - "traefik.http.routers.vps-webui.rule=Host(`${DASHBOARD_DOMAIN}`)"
+      - "traefik.http.routers.vps-webui.entrypoints=websecure"
+      - "traefik.http.routers.vps-webui.tls.certresolver=letsencrypt"
+      - "traefik.http.services.vps-webui.loadbalancer.server.port=8080"
     depends_on:
       - backend
     restart: unless-stopped
