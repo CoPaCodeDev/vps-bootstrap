@@ -1,0 +1,17 @@
+http:
+  routers:
+    {{NAME}}:
+      rule: "Host(`{{DOMAIN}}`)"
+      entryPoints:
+        - websecure
+      service: {{NAME}}
+      middlewares:
+        - authelia
+      tls:
+        certResolver: letsencrypt
+
+  services:
+    {{NAME}}:
+      loadBalancer:
+        servers:
+          - url: "http://{{HOST_IP}}:{{PORT}}"

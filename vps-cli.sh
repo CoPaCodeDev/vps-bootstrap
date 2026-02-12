@@ -15,6 +15,7 @@ SCAN_RANGE_START=2
 SCAN_RANGE_END=254
 PROXY_IP="10.10.0.1"
 TRAEFIK_DIR="/opt/traefik"
+AUTHELIA_DIR="/opt/authelia"
 VPS_HOME="/opt/vps"
 TEMPLATES_DIR="${VPS_HOME}/templates"
 
@@ -731,22 +732,39 @@ cmd_route() {
         remove|rm)
             cmd_route_remove "$@"
             ;;
+        auth)
+            cmd_route_auth "$@"
+            ;;
+        noauth)
+            cmd_route_noauth "$@"
+            ;;
         *)
             print_error "Unbekannter Route-Befehl: $subcmd"
-            echo "Verwendung: vps route <add|list|remove>"
+            echo "Verwendung: vps route <add|list|remove|auth|noauth>"
             exit 1
             ;;
     esac
 }
 
 cmd_route_add() {
+    local auth=false
+
+    # Parse --auth Flag
+    while [[ "${1:-}" == --* ]]; do
+        case "$1" in
+            --auth) auth=true; shift ;;
+            *) print_error "Unbekannte Option: $1"; exit 1 ;;
+        esac
+    done
+
     local domain="$1"
     local host="$2"
     local port="$3"
 
     if [[ -z "$domain" ]] || [[ -z "$host" ]] || [[ -z "$port" ]]; then
-        print_error "Verwendung: vps route add <domain> <host> <port>"
+        print_error "Verwendung: vps route add [--auth] <domain> <host> <port>"
         echo "Beispiel: vps route add app.example.com webserver 8080"
+        echo "          vps route add --auth app.example.com webserver 8080"
         exit 1
     fi
 
@@ -756,16 +774,34 @@ cmd_route_add() {
         exit 1
     fi
 
+    # Prüfe Authelia wenn --auth
+    if [[ "$auth" == "true" ]]; then
+        if ! proxy_exec "test -f ${TRAEFIK_DIR}/conf.d/_authelia.yml" 2>/dev/null; then
+            print_error "Authelia-Middleware nicht gefunden. Führe zuerst 'vps authelia setup' aus."
+            exit 1
+        fi
+    fi
+
     # Löse Host zu IP auf
     local host_ip=$(resolve_host "$host")
 
     # Generiere einen sicheren Namen aus der Domain
     local name=$(echo "$domain" | sed 's/[^a-zA-Z0-9]/-/g' | tr '[:upper:]' '[:lower:]')
 
-    echo "Erstelle Route: $domain -> $host ($host_ip):$port"
+    # Template wählen (mit oder ohne Auth)
+    local template_file="${TEMPLATES_DIR}/traefik/route.yml.template"
+    if [[ "$auth" == "true" ]]; then
+        template_file="${TEMPLATES_DIR}/traefik/route-auth.yml.template"
+    fi
+
+    local auth_info=""
+    if [[ "$auth" == "true" ]]; then
+        auth_info=" (mit Authelia)"
+    fi
+    echo "Erstelle Route: $domain -> $host ($host_ip):$port${auth_info}"
 
     # Erstelle Route-Konfiguration aus Template
-    local route_config=$(cat "${TEMPLATES_DIR}/traefik/route.yml.template" | \
+    local route_config=$(cat "${template_file}" | \
         sed "s/{{NAME}}/${name}/g" | \
         sed "s/{{DOMAIN}}/${domain}/g" | \
         sed "s/{{HOST_IP}}/${host_ip}/g" | \
@@ -774,7 +810,7 @@ cmd_route_add() {
     # Schreibe Konfiguration auf Proxy
     echo "$route_config" | proxy_write "${TRAEFIK_DIR}/conf.d/${domain}.yml"
 
-    print_success "Route hinzugefügt: $domain -> $host_ip:$port"
+    print_success "Route hinzugefügt: $domain -> $host_ip:$port${auth_info}"
     echo ""
     echo "Hinweis: Stelle sicher, dass der DNS-Eintrag für $domain auf die Public-IP des Proxy zeigt."
 }
@@ -782,11 +818,11 @@ cmd_route_add() {
 cmd_route_list() {
     echo "Konfigurierte Routes:"
     echo ""
-    printf "%-35s %-20s %s\n" "DOMAIN" "ZIEL" "DATEI"
-    printf "%-35s %-20s %s\n" "-----------------------------------" "--------------------" "--------------------"
+    printf "%-35s %-20s %-6s %s\n" "DOMAIN" "ZIEL" "AUTH" "DATEI"
+    printf "%-35s %-20s %-6s %s\n" "-----------------------------------" "--------------------" "------" "--------------------"
 
-    # Liste alle .yml Dateien im conf.d Verzeichnis
-    local routes=$(proxy_exec "ls -1 ${TRAEFIK_DIR}/conf.d/*.yml 2>/dev/null" || true)
+    # Liste alle .yml Dateien im conf.d Verzeichnis (ohne _-Prefixed Middleware-Dateien)
+    local routes=$(proxy_exec "ls -1 ${TRAEFIK_DIR}/conf.d/*.yml 2>/dev/null | grep -v '/_'" || true)
 
     if [[ -z "$routes" ]]; then
         echo "Keine Routes konfiguriert."
@@ -801,7 +837,13 @@ cmd_route_list() {
         # Extrahiere URL aus der Datei
         local target=$(proxy_exec "grep -oP 'url: \"http://\K[^\"]+' ${route_file} 2>/dev/null" || echo "?")
 
-        printf "%-35s %-20s %s\n" "$domain" "$target" "$filename"
+        # Prüfe ob Authelia-Middleware aktiv
+        local auth="nein"
+        if proxy_exec "grep -q 'authelia' ${route_file}" 2>/dev/null; then
+            auth="ja"
+        fi
+
+        printf "%-35s %-20s %-6s %s\n" "$domain" "$target" "$auth" "$filename"
     done
 }
 
@@ -827,6 +869,674 @@ cmd_route_remove() {
     if [[ "$confirm" =~ ^[jJyY]$ ]]; then
         proxy_exec "sudo rm -f ${route_file}"
         print_success "Route entfernt: $domain"
+    else
+        echo "Abgebrochen."
+    fi
+}
+
+cmd_route_auth() {
+    local domain="$1"
+
+    if [[ -z "$domain" ]]; then
+        print_error "Verwendung: vps route auth <domain>"
+        exit 1
+    fi
+
+    local route_file="${TRAEFIK_DIR}/conf.d/${domain}.yml"
+
+    if ! proxy_exec "test -f ${route_file}" 2>/dev/null; then
+        print_error "Route für '$domain' nicht gefunden."
+        exit 1
+    fi
+
+    if ! proxy_exec "test -f ${TRAEFIK_DIR}/conf.d/_authelia.yml" 2>/dev/null; then
+        print_error "Authelia-Middleware nicht gefunden. Führe zuerst 'vps authelia setup' aus."
+        exit 1
+    fi
+
+    if proxy_exec "grep -q 'authelia' ${route_file}" 2>/dev/null; then
+        print_warning "Authelia ist bereits aktiv für $domain."
+        return
+    fi
+
+    # Route-Informationen extrahieren
+    local url=$(proxy_exec "grep -oP 'url: \"http://\K[^\"]+' ${route_file}")
+    local host_ip=$(echo "$url" | cut -d: -f1)
+    local port=$(echo "$url" | cut -d: -f2)
+    local name=$(echo "$domain" | sed 's/[^a-zA-Z0-9]/-/g' | tr '[:upper:]' '[:lower:]')
+
+    # Route mit Auth-Template neu generieren
+    local route_config=$(cat "${TEMPLATES_DIR}/traefik/route-auth.yml.template" | \
+        sed "s/{{NAME}}/${name}/g" | \
+        sed "s/{{DOMAIN}}/${domain}/g" | \
+        sed "s/{{HOST_IP}}/${host_ip}/g" | \
+        sed "s/{{PORT}}/${port}/g")
+
+    echo "$route_config" | proxy_write "${route_file}"
+
+    print_success "Authelia aktiviert für: $domain"
+}
+
+cmd_route_noauth() {
+    local domain="$1"
+
+    if [[ -z "$domain" ]]; then
+        print_error "Verwendung: vps route noauth <domain>"
+        exit 1
+    fi
+
+    local route_file="${TRAEFIK_DIR}/conf.d/${domain}.yml"
+
+    if ! proxy_exec "test -f ${route_file}" 2>/dev/null; then
+        print_error "Route für '$domain' nicht gefunden."
+        exit 1
+    fi
+
+    if ! proxy_exec "grep -q 'authelia' ${route_file}" 2>/dev/null; then
+        print_warning "Authelia ist nicht aktiv für $domain."
+        return
+    fi
+
+    # Route-Informationen extrahieren
+    local url=$(proxy_exec "grep -oP 'url: \"http://\K[^\"]+' ${route_file}")
+    local host_ip=$(echo "$url" | cut -d: -f1)
+    local port=$(echo "$url" | cut -d: -f2)
+    local name=$(echo "$domain" | sed 's/[^a-zA-Z0-9]/-/g' | tr '[:upper:]' '[:lower:]')
+
+    # Route ohne Auth-Template neu generieren
+    local route_config=$(cat "${TEMPLATES_DIR}/traefik/route.yml.template" | \
+        sed "s/{{NAME}}/${name}/g" | \
+        sed "s/{{DOMAIN}}/${domain}/g" | \
+        sed "s/{{HOST_IP}}/${host_ip}/g" | \
+        sed "s/{{PORT}}/${port}/g")
+
+    echo "$route_config" | proxy_write "${route_file}"
+
+    print_success "Authelia deaktiviert für: $domain"
+}
+
+# === AUTHELIA ===
+
+cmd_authelia() {
+    local subcmd="$1"
+    shift 2>/dev/null || true
+
+    case "$subcmd" in
+        setup)
+            cmd_authelia_setup "$@"
+            ;;
+        status)
+            cmd_authelia_status
+            ;;
+        logs)
+            cmd_authelia_logs "$@"
+            ;;
+        restart)
+            cmd_authelia_restart
+            ;;
+        user)
+            cmd_authelia_user "$@"
+            ;;
+        domain)
+            cmd_authelia_domain "$@"
+            ;;
+        help|"")
+            cmd_authelia_help
+            ;;
+        *)
+            print_error "Unbekannter Authelia-Befehl: $subcmd"
+            cmd_authelia_help
+            exit 1
+            ;;
+    esac
+}
+
+cmd_authelia_help() {
+    echo "=== Authelia - Single Sign-On (SSO) ==="
+    echo ""
+    echo "Authelia stellt zentrale Authentifizierung für alle Services bereit."
+    echo "Einmal einloggen, überall angemeldet — auch über mehrere Domains."
+    echo ""
+    echo "Einrichtung:"
+    echo "  vps authelia setup                     Interaktive Ersteinrichtung"
+    echo ""
+    echo "Status & Verwaltung:"
+    echo "  vps authelia status                    Container-Status anzeigen"
+    echo "  vps authelia logs [zeilen]             Logs anzeigen (Standard: 50)"
+    echo "  vps authelia restart                   Authelia neu starten"
+    echo ""
+    echo "Benutzerverwaltung:"
+    echo "  vps authelia user add                  Neuen Benutzer anlegen"
+    echo "  vps authelia user list                 Alle Benutzer anzeigen"
+    echo "  vps authelia user remove <user>        Benutzer entfernen"
+    echo ""
+    echo "Domain-Verwaltung (Multi-Domain SSO):"
+    echo "  vps authelia domain add [domain]       Cookie-Domain hinzufügen"
+    echo "  vps authelia domain list               Konfigurierte Domains anzeigen"
+    echo "  vps authelia domain remove <domain>    Cookie-Domain entfernen"
+    echo ""
+    echo "Routen absichern:"
+    echo "  vps route add --auth <domain> <host> <port>   Neue Route mit Auth"
+    echo "  vps route auth <domain>                       Auth für Route aktivieren"
+    echo "  vps route noauth <domain>                     Auth für Route deaktivieren"
+    echo ""
+    echo "Beispiel — Mehrere Domains:"
+    echo "  vps authelia setup                     # Setup mit firma.de"
+    echo "  vps authelia domain add privat.de      # privat.de nachträglich hinzufügen"
+    echo "  vps authelia domain list               # Alle Domains anzeigen"
+    echo "  vps route add --auth app.privat.de webserver 8080"
+    echo ""
+    echo "Hinweis: DNS-Einträge müssen auf die Proxy-Public-IP zeigen."
+}
+
+cmd_authelia_setup() {
+    echo "=== Authelia Setup ==="
+    echo ""
+
+    # Prüfe ob Traefik installiert ist
+    if ! proxy_exec "test -f ${TRAEFIK_DIR}/docker-compose.yml" 2>/dev/null; then
+        print_error "Traefik ist nicht installiert. Führe zuerst 'vps traefik setup' aus."
+        exit 1
+    fi
+
+    # Prüfe ob Docker installiert ist
+    if ! proxy_exec "command -v docker" &>/dev/null; then
+        print_error "Docker ist nicht installiert."
+        exit 1
+    fi
+
+    # Domain abfragen
+    local auth_domain=""
+    while [[ -z "$auth_domain" ]]; do
+        read -p "Authelia-Domain (z.B. auth.example.de): " auth_domain
+    done
+
+    # Cookie-Domains abfragen (Multi-Domain-Support)
+    echo ""
+    echo "Die Cookie-Domains bestimmen, für welche Domains SSO gilt."
+    echo "Beispiel: Für app.example.de und docs.example.de -> example.de"
+    echo "Du kannst mehrere Domains angeben (z.B. firma.de und privat.de)."
+    echo ""
+    local cookie_domains=()
+    local cookie_domain=""
+    while true; do
+        local prompt_text="Cookie-Domain"
+        if [[ ${#cookie_domains[@]} -gt 0 ]]; then
+            prompt_text="Weitere Cookie-Domain (leer = fertig)"
+        fi
+        read -p "${prompt_text} (z.B. example.de): " cookie_domain
+        if [[ -z "$cookie_domain" ]]; then
+            if [[ ${#cookie_domains[@]} -eq 0 ]]; then
+                print_error "Mindestens eine Cookie-Domain ist erforderlich."
+                continue
+            fi
+            break
+        fi
+        cookie_domains+=("$cookie_domain")
+        echo "  -> $cookie_domain hinzugefügt (${#cookie_domains[@]} Domain(s))"
+    done
+
+    # Admin-User erstellen
+    echo ""
+    echo "Admin-Benutzer erstellen:"
+    local admin_user=""
+    while [[ -z "$admin_user" ]]; do
+        read -p "Benutzername: " admin_user
+    done
+
+    local admin_displayname=""
+    while [[ -z "$admin_displayname" ]]; do
+        read -p "Anzeigename: " admin_displayname
+    done
+
+    local admin_email=""
+    while [[ -z "$admin_email" ]]; do
+        read -p "E-Mail: " admin_email
+    done
+
+    local admin_pass=""
+    while [[ -z "$admin_pass" ]]; do
+        read -s -p "Passwort: " admin_pass
+        echo ""
+    done
+    local admin_pass_confirm=""
+    read -s -p "Passwort bestätigen: " admin_pass_confirm
+    echo ""
+
+    if [[ "$admin_pass" != "$admin_pass_confirm" ]]; then
+        print_error "Passwörter stimmen nicht überein."
+        exit 1
+    fi
+
+    # Zusammenfassung
+    echo ""
+    echo "Zusammenfassung:"
+    echo "  Authelia:       https://$auth_domain"
+    echo "  Cookie-Domains:"
+    for d in "${cookie_domains[@]}"; do
+        echo "    - $d"
+    done
+    echo "  Admin-User:     $admin_user ($admin_displayname)"
+    echo "  E-Mail:         $admin_email"
+    echo ""
+    read -p "Einrichtung starten? (j/n): " confirm
+    if [[ "$confirm" != "j" && "$confirm" != "J" ]]; then
+        echo "Abgebrochen."
+        exit 0
+    fi
+
+    echo ""
+    echo "Richte Authelia auf Proxy ($PROXY_IP) ein..."
+
+    # Passwort-Hash erzeugen
+    echo "Erzeuge Passwort-Hash..."
+    local password_hash
+    password_hash=$(proxy_exec "docker run --rm authelia/authelia:latest authelia crypto hash generate argon2 --password '${admin_pass}'" 2>/dev/null | grep 'Digest:' | sed 's/Digest: //')
+    if [[ -z "$password_hash" ]]; then
+        print_error "Konnte Passwort-Hash nicht erzeugen."
+        exit 1
+    fi
+
+    # Secrets generieren
+    local session_secret=$(openssl rand -base64 64 | tr -d '/+=\n' | head -c 64)
+    local storage_key=$(openssl rand -base64 64 | tr -d '/+=\n' | head -c 64)
+    local jwt_secret=$(openssl rand -base64 64 | tr -d '/+=\n' | head -c 64)
+
+    # Verzeichnisstruktur erstellen
+    echo "Erstelle Verzeichnisstruktur..."
+    proxy_exec "sudo mkdir -p ${AUTHELIA_DIR}/config ${AUTHELIA_DIR}/redis-data"
+
+    # Konfigurationsdateien kopieren
+    echo "Kopiere Konfigurationsdateien..."
+
+    # docker-compose.yml
+    sed "s/\${AUTH_DOMAIN}/${auth_domain}/g" \
+        "${TEMPLATES_DIR}/authelia/docker-compose.yml" | proxy_write "${AUTHELIA_DIR}/docker-compose.yml"
+
+    # Cookie-Domains-Block generieren (Temp-Datei für Multiline-Ersetzung)
+    local cookie_block_file
+    cookie_block_file=$(mktemp)
+    for d in "${cookie_domains[@]}"; do
+        echo "    - domain: '${d}'" >> "$cookie_block_file"
+        echo "      authelia_url: 'https://${auth_domain}'" >> "$cookie_block_file"
+        echo "      default_redirection_url: 'https://${auth_domain}'" >> "$cookie_block_file"
+    done
+
+    # configuration.yml
+    sed -e "s|{{AUTH_DOMAIN}}|${auth_domain}|g" \
+        -e "s|{{SESSION_SECRET}}|${session_secret}|g" \
+        -e "s|{{STORAGE_ENCRYPTION_KEY}}|${storage_key}|g" \
+        -e "s|{{JWT_SECRET}}|${jwt_secret}|g" \
+        "${TEMPLATES_DIR}/authelia/configuration.yml" | \
+        sed -e "/{{COOKIE_DOMAINS}}/{r ${cookie_block_file}" -e "d}" | \
+        proxy_write "${AUTHELIA_DIR}/config/configuration.yml"
+    rm -f "$cookie_block_file"
+
+    # users_database.yml
+    sed -e "s|{{ADMIN_USER}}|${admin_user}|g" \
+        -e "s|{{ADMIN_DISPLAYNAME}}|${admin_displayname}|g" \
+        -e "s|{{ADMIN_PASSWORD_HASH}}|${password_hash}|g" \
+        -e "s|{{ADMIN_EMAIL}}|${admin_email}|g" \
+        "${TEMPLATES_DIR}/authelia/users_database.yml" | proxy_write "${AUTHELIA_DIR}/config/users_database.yml"
+
+    # Traefik ForwardAuth Middleware installieren
+    echo "Installiere Traefik-Middleware..."
+    cat "${TEMPLATES_DIR}/traefik/authelia-middleware.yml" | proxy_write "${TRAEFIK_DIR}/conf.d/_authelia.yml"
+
+    # Berechtigungen
+    proxy_exec "sudo chown -R ${SSH_USER}:${SSH_USER} ${AUTHELIA_DIR}"
+
+    # Starte Authelia
+    echo "Starte Authelia..."
+    proxy_exec "cd ${AUTHELIA_DIR} && docker compose up -d"
+
+    # Traefik-Dashboard auf Authelia umstellen
+    echo ""
+    read -p "Traefik-Dashboard auch mit Authelia absichern? [J/n] " dashboard_confirm
+    if [[ ! "$dashboard_confirm" =~ ^[nN]$ ]]; then
+        echo "Aktualisiere Traefik-Dashboard..."
+        proxy_exec "sed -i 's/middlewares=dashboard-auth/middlewares=authelia@file/' ${TRAEFIK_DIR}/docker-compose.yml"
+        proxy_exec "sed -i '/dashboard-auth\.basicauth/d' ${TRAEFIK_DIR}/docker-compose.yml"
+        proxy_exec "cd ${TRAEFIK_DIR} && docker compose up -d"
+        echo "Traefik-Dashboard ist jetzt mit Authelia abgesichert."
+    fi
+
+    print_success "Authelia erfolgreich eingerichtet!"
+    echo ""
+    echo "Portal: https://$auth_domain"
+    echo "Login:  $admin_user / ********"
+    echo ""
+    echo "Hinweis: DNS-Eintrag für '$auth_domain' muss auf die Proxy-Public-IP zeigen."
+    echo ""
+    echo "Routen mit Authelia absichern:"
+    echo "  vps route add --auth <domain> <host> <port>    # Neue Route mit Auth"
+    echo "  vps route auth <domain>                         # Bestehende Route absichern"
+}
+
+cmd_authelia_status() {
+    echo "Authelia-Status auf Proxy ($PROXY_IP):"
+    proxy_exec "cd ${AUTHELIA_DIR} && docker compose ps" 2>/dev/null || print_error "Authelia ist nicht installiert."
+}
+
+cmd_authelia_logs() {
+    local lines="${1:-50}"
+    proxy_exec "cd ${AUTHELIA_DIR} && docker compose logs --tail=${lines}"
+}
+
+cmd_authelia_restart() {
+    echo "Starte Authelia neu..."
+    proxy_exec "cd ${AUTHELIA_DIR} && docker compose restart"
+    print_success "Authelia neu gestartet."
+}
+
+# Authelia Benutzerverwaltung
+cmd_authelia_user() {
+    local subcmd="$1"
+    shift 2>/dev/null || true
+
+    case "$subcmd" in
+        add)
+            cmd_authelia_user_add "$@"
+            ;;
+        list|ls)
+            cmd_authelia_user_list
+            ;;
+        remove|rm)
+            cmd_authelia_user_remove "$@"
+            ;;
+        *)
+            print_error "Unbekannter User-Befehl: $subcmd"
+            echo "Verwendung: vps authelia user <add|list|remove>"
+            exit 1
+            ;;
+    esac
+}
+
+cmd_authelia_user_add() {
+    local users_file="${AUTHELIA_DIR}/config/users_database.yml"
+
+    if ! proxy_exec "test -f ${users_file}" 2>/dev/null; then
+        print_error "Authelia ist nicht eingerichtet. Führe zuerst 'vps authelia setup' aus."
+        exit 1
+    fi
+
+    local username=""
+    while [[ -z "$username" ]]; do
+        read -p "Benutzername: " username
+    done
+
+    # Prüfe ob User bereits existiert
+    if proxy_exec "grep -q '  ${username}:' ${users_file}" 2>/dev/null; then
+        print_error "Benutzer '$username' existiert bereits."
+        exit 1
+    fi
+
+    local displayname=""
+    while [[ -z "$displayname" ]]; do
+        read -p "Anzeigename: " displayname
+    done
+
+    local email=""
+    while [[ -z "$email" ]]; do
+        read -p "E-Mail: " email
+    done
+
+    local password=""
+    while [[ -z "$password" ]]; do
+        read -s -p "Passwort: " password
+        echo ""
+    done
+    local password_confirm=""
+    read -s -p "Passwort bestätigen: " password_confirm
+    echo ""
+
+    if [[ "$password" != "$password_confirm" ]]; then
+        print_error "Passwörter stimmen nicht überein."
+        exit 1
+    fi
+
+    # Hash erzeugen
+    echo "Erzeuge Passwort-Hash..."
+    local password_hash
+    password_hash=$(proxy_exec "docker run --rm authelia/authelia:latest authelia crypto hash generate argon2 --password '${password}'" 2>/dev/null | grep 'Digest:' | sed 's/Digest: //')
+    if [[ -z "$password_hash" ]]; then
+        print_error "Konnte Passwort-Hash nicht erzeugen."
+        exit 1
+    fi
+
+    # User zur Datei hinzufügen
+    proxy_exec "sudo tee -a ${users_file} > /dev/null << USEREOF
+  ${username}:
+    disabled: false
+    displayname: '${displayname}'
+    password: '${password_hash}'
+    email: '${email}'
+USEREOF"
+
+    print_success "Benutzer '$username' hinzugefügt."
+    echo "Authelia erkennt die Änderung automatisch."
+}
+
+cmd_authelia_user_list() {
+    local users_file="${AUTHELIA_DIR}/config/users_database.yml"
+
+    if ! proxy_exec "test -f ${users_file}" 2>/dev/null; then
+        print_error "Authelia ist nicht eingerichtet."
+        exit 1
+    fi
+
+    echo "Authelia-Benutzer:"
+    echo ""
+    printf "%-20s %-25s %s\n" "BENUTZER" "ANZEIGENAME" "E-MAIL"
+    printf "%-20s %-25s %s\n" "--------------------" "-------------------------" "-------------------------"
+
+    # Parse users_database.yml
+    local current_user="" current_display="" current_email=""
+    while IFS= read -r line; do
+        if [[ "$line" =~ ^\ \ ([a-zA-Z0-9_-]+):$ ]]; then
+            # Vorherigen User ausgeben
+            if [[ -n "$current_user" ]]; then
+                printf "%-20s %-25s %s\n" "$current_user" "$current_display" "$current_email"
+            fi
+            current_user="${BASH_REMATCH[1]}"
+            current_display=""
+            current_email=""
+        elif [[ "$line" =~ displayname:\ *\'(.+)\' ]]; then
+            current_display="${BASH_REMATCH[1]}"
+        elif [[ "$line" =~ email:\ *\'(.+)\' ]]; then
+            current_email="${BASH_REMATCH[1]}"
+        fi
+    done < <(proxy_exec "cat ${users_file}")
+
+    # Letzten User ausgeben
+    if [[ -n "$current_user" ]]; then
+        printf "%-20s %-25s %s\n" "$current_user" "$current_display" "$current_email"
+    fi
+}
+
+cmd_authelia_user_remove() {
+    local username="$1"
+
+    if [[ -z "$username" ]]; then
+        print_error "Verwendung: vps authelia user remove <benutzername>"
+        exit 1
+    fi
+
+    local users_file="${AUTHELIA_DIR}/config/users_database.yml"
+
+    if ! proxy_exec "test -f ${users_file}" 2>/dev/null; then
+        print_error "Authelia ist nicht eingerichtet."
+        exit 1
+    fi
+
+    if ! proxy_exec "grep -q '  ${username}:' ${users_file}" 2>/dev/null; then
+        print_error "Benutzer '$username' nicht gefunden."
+        exit 1
+    fi
+
+    print_warning "Benutzer '$username' wird entfernt."
+    read -p "Fortfahren? [j/N] " confirm
+
+    if [[ "$confirm" =~ ^[jJyY]$ ]]; then
+        # Lösche Benutzerblock (Username-Zeile + 4 Eigenschaftszeilen)
+        proxy_exec "sudo sed -i '/^  ${username}:$/,+4d' ${users_file}"
+        print_success "Benutzer '$username' entfernt."
+        echo "Authelia erkennt die Änderung automatisch."
+    else
+        echo "Abgebrochen."
+    fi
+}
+
+# Prüft ob Authelia auf dem Proxy eingerichtet ist
+authelia_is_installed() {
+    proxy_exec "test -f ${AUTHELIA_DIR}/docker-compose.yml" 2>/dev/null
+}
+
+# Authelia Domain-Verwaltung
+cmd_authelia_domain() {
+    local subcmd="$1"
+    shift 2>/dev/null || true
+
+    case "$subcmd" in
+        add)
+            cmd_authelia_domain_add "$@"
+            ;;
+        list|ls)
+            cmd_authelia_domain_list
+            ;;
+        remove|rm)
+            cmd_authelia_domain_remove "$@"
+            ;;
+        *)
+            print_error "Unbekannter Domain-Befehl: $subcmd"
+            echo "Verwendung: vps authelia domain <add|list|remove>"
+            exit 1
+            ;;
+    esac
+}
+
+cmd_authelia_domain_add() {
+    local config_file="${AUTHELIA_DIR}/config/configuration.yml"
+
+    if ! proxy_exec "test -f ${config_file}" 2>/dev/null; then
+        print_error "Authelia ist nicht eingerichtet. Führe zuerst 'vps authelia setup' aus."
+        exit 1
+    fi
+
+    local new_domain="$1"
+    if [[ -z "$new_domain" ]]; then
+        read -p "Neue Cookie-Domain (z.B. privat.de): " new_domain
+    fi
+
+    if [[ -z "$new_domain" ]]; then
+        print_error "Keine Domain angegeben."
+        exit 1
+    fi
+
+    # Prüfe ob Domain bereits existiert
+    if proxy_exec "grep -q \"domain: '${new_domain}'\" ${config_file}" 2>/dev/null; then
+        print_error "Domain '$new_domain' ist bereits konfiguriert."
+        exit 1
+    fi
+
+    # Authelia-URL aus bestehender Config lesen
+    local auth_url
+    auth_url=$(proxy_exec "grep 'authelia_url:' ${config_file} | head -1 | sed \"s/.*authelia_url: '\\(.*\\)'/\\1/\"" 2>/dev/null)
+    if [[ -z "$auth_url" ]]; then
+        print_error "Konnte Authelia-URL nicht aus der Konfiguration lesen."
+        exit 1
+    fi
+
+    echo "Füge Domain '$new_domain' hinzu..."
+    echo "  Authelia-URL: $auth_url"
+    echo ""
+    read -p "Fortfahren? [J/n] " confirm
+    if [[ "$confirm" =~ ^[nN]$ ]]; then
+        echo "Abgebrochen."
+        exit 0
+    fi
+
+    # Neuen Cookie-Block vor dem redis:-Abschnitt einfügen
+    proxy_exec "sudo sed -i '/^  redis:/i\\    - domain: '\''${new_domain}'\''\\n      authelia_url: '\''${auth_url}'\''\\n      default_redirection_url: '\''${auth_url}'\''' ${config_file}"
+
+    # Authelia neu starten
+    echo "Starte Authelia neu..."
+    proxy_exec "cd ${AUTHELIA_DIR} && docker compose restart"
+
+    print_success "Domain '$new_domain' hinzugefügt."
+    echo ""
+    echo "Hinweis: DNS-Einträge für Subdomains von '$new_domain' müssen auf die Proxy-Public-IP zeigen."
+}
+
+cmd_authelia_domain_list() {
+    local config_file="${AUTHELIA_DIR}/config/configuration.yml"
+
+    if ! proxy_exec "test -f ${config_file}" 2>/dev/null; then
+        print_error "Authelia ist nicht eingerichtet."
+        exit 1
+    fi
+
+    echo "Konfigurierte Cookie-Domains:"
+    echo ""
+
+    local domains
+    domains=$(proxy_exec "grep \"domain: '\" ${config_file} | sed \"s/.*domain: '\\(.*\\)'/\\1/\"" 2>/dev/null)
+
+    if [[ -z "$domains" ]]; then
+        echo "  Keine Domains konfiguriert."
+        return
+    fi
+
+    local i=1
+    while IFS= read -r domain; do
+        echo "  ${i}. ${domain}"
+        ((i++))
+    done <<< "$domains"
+
+    echo ""
+    echo "Gesamt: $((i - 1)) Domain(s)"
+}
+
+cmd_authelia_domain_remove() {
+    local config_file="${AUTHELIA_DIR}/config/configuration.yml"
+
+    if ! proxy_exec "test -f ${config_file}" 2>/dev/null; then
+        print_error "Authelia ist nicht eingerichtet."
+        exit 1
+    fi
+
+    local domain="$1"
+    if [[ -z "$domain" ]]; then
+        print_error "Verwendung: vps authelia domain remove <domain>"
+        exit 1
+    fi
+
+    # Prüfe ob Domain existiert
+    if ! proxy_exec "grep -q \"domain: '${domain}'\" ${config_file}" 2>/dev/null; then
+        print_error "Domain '$domain' ist nicht konfiguriert."
+        exit 1
+    fi
+
+    # Prüfe ob es die letzte Domain wäre
+    local domain_count
+    domain_count=$(proxy_exec "grep -c \"domain: '\" ${config_file}" 2>/dev/null)
+    if [[ "$domain_count" -le 1 ]]; then
+        print_error "Kann die letzte Domain nicht entfernen. Mindestens eine Cookie-Domain ist erforderlich."
+        exit 1
+    fi
+
+    print_warning "Domain '$domain' wird entfernt."
+    read -p "Fortfahren? [j/N] " confirm
+
+    if [[ "$confirm" =~ ^[jJyY]$ ]]; then
+        # Lösche den 3-Zeilen Cookie-Block (domain + authelia_url + default_redirection_url)
+        proxy_exec "sudo sed -i \"/domain: '${domain}'/,+2d\" ${config_file}"
+
+        # Authelia neu starten
+        echo "Starte Authelia neu..."
+        proxy_exec "cd ${AUTHELIA_DIR} && docker compose restart"
+
+        print_success "Domain '$domain' entfernt."
     else
         echo "Abgebrochen."
     fi
@@ -859,6 +1569,7 @@ deploy_load_template() {
     TEMPLATE_REQUIRES_ROUTE=false
     TEMPLATE_ROUTE_PORT=""
     TEMPLATE_VARS=()
+    TEMPLATE_DEFAULTS=()
     TEMPLATE_COMPOSE_PROFILES=()
     TEMPLATE_ADDITIONAL_ROUTES=()
 
@@ -955,7 +1666,7 @@ deploy_files() {
         done
 
         echo "$content" | host_write "$ip" "$dest_path"
-    done < <(find "$template_dir" -type f ! -name "template.conf" ! -name ".gitkeep")
+    done < <(find "$template_dir" -type f ! -name "template.conf" ! -name "authelia.conf" ! -name ".gitkeep")
 }
 
 # Verfügbare Templates auflisten
@@ -1108,11 +1819,45 @@ cmd_deploy_app() {
     # HOST_IP automatisch setzen
     collected_vars["HOST_IP"]="$ip"
 
+    # Template-Defaults setzen (interne Variablen ohne Abfrage)
+    if [[ ${#TEMPLATE_DEFAULTS[@]} -gt 0 ]]; then
+        for default_def in "${TEMPLATE_DEFAULTS[@]}"; do
+            local dkey="${default_def%%=*}"
+            local dval="${default_def#*=}"
+            collected_vars["$dkey"]="$dval"
+        done
+    fi
+
+    # Authelia-Integration prüfen
+    local use_authelia=false
+    if [[ "$TEMPLATE_REQUIRES_ROUTE" == "true" ]] && authelia_is_installed; then
+        echo ""
+        read -p "Route mit Authelia absichern? [J/n] " auth_confirm
+        if [[ ! "$auth_confirm" =~ ^[nN]$ ]]; then
+            use_authelia=true
+            # Template-spezifische Authelia-Variablen laden
+            local authelia_conf="${template_dir}/authelia.conf"
+            if [[ -f "$authelia_conf" ]]; then
+                local AUTHELIA_TEMPLATE_VARS=()
+                source "$authelia_conf"
+                for av in "${AUTHELIA_TEMPLATE_VARS[@]}"; do
+                    local akey="${av%%=*}"
+                    local aval="${av#*=}"
+                    collected_vars["$akey"]="$aval"
+                done
+            fi
+        fi
+        echo ""
+    fi
+
     # Zusammenfassung
     echo "Zusammenfassung:"
     echo "  Template:   ${TEMPLATE_NAME:-$template}"
     echo "  Ziel:       $target ($ip)"
     echo "  Verzeichnis: $deploy_dir"
+    if [[ "$use_authelia" == "true" ]]; then
+        echo "  Authelia:   ja"
+    fi
     for key in "${!collected_vars[@]}"; do
         [[ "$key" == "HOST_IP" ]] && continue
         # Typ der Variable ermitteln
@@ -1167,9 +1912,14 @@ cmd_deploy_app() {
     ssh_exec "$ip" "cd ${deploy_dir} && docker compose${profiles} up -d"
 
     # Route anlegen
+    local route_auth_flag=""
+    if [[ "$use_authelia" == "true" ]]; then
+        route_auth_flag="--auth"
+    fi
+
     if [[ "$TEMPLATE_REQUIRES_ROUTE" == "true" && -n "${collected_vars[DOMAIN]}" ]]; then
         echo "Lege Traefik-Route an..."
-        cmd_route_add "${collected_vars[DOMAIN]}" "$target" "${TEMPLATE_ROUTE_PORT}"
+        cmd_route_add $route_auth_flag "${collected_vars[DOMAIN]}" "$target" "${TEMPLATE_ROUTE_PORT}"
     fi
 
     # Zusätzliche Routen anlegen
@@ -1178,7 +1928,7 @@ cmd_deploy_app() {
             IFS='|' read -r route_var route_port <<< "$route_def"
             if [[ -n "${collected_vars[$route_var]}" ]]; then
                 echo "Lege Traefik-Route an (${collected_vars[$route_var]})..."
-                cmd_route_add "${collected_vars[$route_var]}" "$target" "$route_port"
+                cmd_route_add $route_auth_flag "${collected_vars[$route_var]}" "$target" "$route_port"
             fi
         done
     fi
@@ -3440,9 +4190,23 @@ Docker & Traefik:
   traefik restart                   Startet Traefik neu
 
 Routing:
-  route add <domain> <host> <port>  Fügt eine Route hinzu
-  route list                        Zeigt alle Routes
+  route add [--auth] <domain> <host> <port>  Fügt eine Route hinzu (--auth für Authelia)
+  route list                        Zeigt alle Routes (mit Auth-Status)
   route remove <domain>             Entfernt eine Route
+  route auth <domain>               Aktiviert Authelia für eine Route
+  route noauth <domain>             Deaktiviert Authelia für eine Route
+
+Authelia (Proxy-Auth):
+  authelia setup                    Richtet Authelia auf dem Proxy ein
+  authelia status                   Zeigt Authelia-Status
+  authelia logs [lines]             Zeigt Authelia-Logs
+  authelia restart                  Startet Authelia neu
+  authelia user add                 Neuen Benutzer hinzufügen
+  authelia user list                Benutzer anzeigen
+  authelia user remove <user>       Benutzer entfernen
+  authelia domain add [domain]      Cookie-Domain hinzufügen
+  authelia domain list              Cookie-Domains anzeigen
+  authelia domain remove <domain>   Cookie-Domain entfernen
 
 Deployment:
   deploy <template> <host>          Deployed ein Template auf einen Host
@@ -3480,8 +4244,15 @@ Beispiele:
   vps docker list webserver          # Container auf VPS anzeigen
   vps docker stop webserver myapp    # Container stoppen
   vps traefik setup                 # Traefik einrichten (interaktiv)
-  vps route add app.de webserver 80 # Route hinzufügen
-  vps route list                    # Routes anzeigen
+  vps route add app.de webserver 80       # Route hinzufügen
+  vps route add --auth app.de ws 80      # Route mit Authelia
+  vps route auth app.de                  # Authelia für Route aktivieren
+  vps route list                         # Routes anzeigen
+  vps authelia setup                     # Authelia einrichten
+  vps authelia user add                  # Benutzer hinzufügen
+  vps authelia user list                 # Benutzer anzeigen
+  vps authelia domain add privat.de      # Weitere Domain hinzufügen
+  vps authelia domain list               # Domains anzeigen
   vps deploy list                   # Verfügbare Templates
   vps deploy uptime-kuma webserver  # App deployen
   vps deploy status webserver       # Deployments anzeigen
@@ -3541,6 +4312,9 @@ main() {
             ;;
         deploy)
             cmd_deploy "$@"
+            ;;
+        authelia)
+            cmd_authelia "$@"
             ;;
         netcup)
             cmd_netcup "$@"

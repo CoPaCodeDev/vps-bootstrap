@@ -1,0 +1,51 @@
+---
+# Authelia Konfiguration
+
+server:
+  address: 'tcp://:9091'
+
+log:
+  level: info
+
+totp:
+  issuer: '{{AUTH_DOMAIN}}'
+
+identity_validation:
+  reset_password:
+    jwt_secret: '{{JWT_SECRET}}'
+
+authentication_backend:
+  file:
+    path: /config/users_database.yml
+    password:
+      algorithm: argon2id
+      iterations: 3
+      memory: 65536
+      parallelism: 4
+      salt_length: 16
+      key_length: 32
+
+access_control:
+  default_policy: one_factor
+
+session:
+  secret: '{{SESSION_SECRET}}'
+  cookies:
+{{COOKIE_DOMAINS}}
+  redis:
+    host: authelia-redis
+    port: 6379
+
+regulation:
+  max_retries: 3
+  find_time: 2m
+  ban_time: 5m
+
+storage:
+  encryption_key: '{{STORAGE_ENCRYPTION_KEY}}'
+  local:
+    path: /config/db.sqlite3
+
+notifier:
+  filesystem:
+    filename: /config/notification.txt

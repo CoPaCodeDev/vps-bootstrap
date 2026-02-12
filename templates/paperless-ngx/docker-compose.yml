@@ -68,6 +68,8 @@ services:
       PAPERLESS_TIKA_GOTENBERG_ENDPOINT: http://gotenberg:3000
       PAPERLESS_TIKA_ENDPOINT: http://tika:9998
       PAPERLESS_URL: https://{{DOMAIN}}
+      PAPERLESS_ENABLE_HTTP_REMOTE_USER: "{{PAPERLESS_REMOTE_USER}}"
+      PAPERLESS_HTTP_REMOTE_USER_HEADER_NAME: "Remote-User"
     volumes:
       - ./data:/usr/src/paperless/data
       - ./media:/usr/src/paperless/media
