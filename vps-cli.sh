@@ -1153,18 +1153,39 @@ cmd_authelia_setup() {
     # Konfigurationsdateien kopieren
     echo "Kopiere Konfigurationsdateien..."
 
-    # Traefik Host-Rule für alle Auth-Domains generieren
-    local auth_hosts_rule="Host(\`${auth_domain}\`)"
-    for d in "${cookie_domains[@]}"; do
-        local ad="auth.${d}"
-        if [[ "$ad" != "$auth_domain" ]]; then
-            auth_hosts_rule="${auth_hosts_rule} || Host(\`${ad}\`)"
-        fi
-    done
+    # docker-compose.yml (ohne Traefik-Labels, Routing über File-Provider)
+    cat "${TEMPLATES_DIR}/authelia/docker-compose.yml" | proxy_write "${AUTHELIA_DIR}/docker-compose.yml"
 
-    # docker-compose.yml
-    sed -e "s#\${AUTH_HOSTS_RULE}#${auth_hosts_rule}#g" \
-        "${TEMPLATES_DIR}/authelia/docker-compose.yml" | proxy_write "${AUTHELIA_DIR}/docker-compose.yml"
+    # Traefik-Route für alle Auth-Domains erstellen (File-Provider)
+    echo "Erstelle Traefik-Routen für Auth-Domains..."
+    local route_file
+    route_file=$(mktemp)
+    cat > "$route_file" <<'ROUTE_HEADER'
+http:
+  routers:
+ROUTE_HEADER
+    for d in "${cookie_domains[@]}"; do
+        local auth_d="auth.${d}"
+        local route_name="authelia-${d//\./-}"
+        cat >> "$route_file" <<ROUTE_ROUTER
+    ${route_name}:
+      rule: "Host(\`${auth_d}\`)"
+      entryPoints:
+        - websecure
+      service: authelia-svc
+      tls:
+        certResolver: letsencrypt
+ROUTE_ROUTER
+    done
+    cat >> "$route_file" <<'ROUTE_SVC'
+  services:
+    authelia-svc:
+      loadBalancer:
+        servers:
+          - url: "http://authelia:9091"
+ROUTE_SVC
+    cat "$route_file" | proxy_write "${TRAEFIK_DIR}/conf.d/_authelia-portal.yml"
+    rm -f "$route_file"
 
     # Cookie-Domains-Block generieren (Temp-Datei für Multiline-Ersetzung)
     local cookie_block_file

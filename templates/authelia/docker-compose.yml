@@ -9,13 +9,6 @@ services:
       TZ: Europe/Berlin
     networks:
       - traefik
-    labels:
-      - "traefik.enable=true"
-      - "traefik.http.routers.authelia.rule=${AUTH_HOSTS_RULE}"
-      - "traefik.http.routers.authelia.entrypoints=websecure"
-      - "traefik.http.routers.authelia.tls=true"
-      - "traefik.http.routers.authelia.tls.certresolver=letsencrypt"
-      - "traefik.http.services.authelia.loadbalancer.server.port=9091"
     healthcheck:
       test: ["CMD", "authelia", "healthcheck"]
       interval: 10s
