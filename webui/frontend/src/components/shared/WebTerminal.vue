@@ -165,16 +165,19 @@ watch(
   background: #1e1e2e;
   border-radius: var(--p-border-radius);
   overflow: hidden;
+  height: 500px;
 }
 
 .terminal-container {
   padding: 0.5rem;
-  min-height: 400px;
+  height: 100%;
+  box-sizing: border-box;
 }
 
-/* xterm.js Container soll volle Breite nutzen */
-.terminal-container :deep(.xterm) {
-  height: 100%;
+.terminal-container :deep(.xterm),
+.terminal-container :deep(.xterm-viewport),
+.terminal-container :deep(.xterm-screen) {
+  height: 100% !important;
 }
 
 .terminal-overlay {
