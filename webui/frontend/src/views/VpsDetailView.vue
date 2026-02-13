@@ -1,7 +1,7 @@
 <script setup lang="ts">
 import { ref, onMounted, computed } from 'vue'
 import { useRoute } from 'vue-router'
-import { useVpsStore, type VPSStatus } from '@/stores/vps'
+import { useVpsStore } from '@/stores/vps'
 import { useApi } from '@/composables/useApi'
 import { useTaskStream } from '@/composables/useTaskStream'
 import VpsStatusBadge from '@/components/vps/VpsStatusBadge.vue'
@@ -10,7 +10,6 @@ import WebTerminal from '@/components/shared/WebTerminal.vue'
 import ConfirmDialog from '@/components/shared/ConfirmDialog.vue'
 import Card from 'primevue/card'
 import Button from 'primevue/button'
-import InputText from 'primevue/inputtext'
 import { useToast } from 'primevue/usetoast'
 
 const route = useRoute()
@@ -21,11 +20,8 @@ const toast = useToast()
 const task = useTaskStream()
 
 const status = computed(() => vpsStore.statuses[host.value])
-const execCommand = ref('')
-const execOutput = ref('')
-const execLoading = ref(false)
 const showRebootConfirm = ref(false)
-const showTerminal = ref(false)
+const terminalCount = ref(1)
 
 onMounted(async () => {
   await vpsStore.fetchHosts()
@@ -51,22 +47,6 @@ async function doReboot() {
   }
 }
 
-async function runExec() {
-  if (!execCommand.value.trim()) return
-  execLoading.value = true
-  execOutput.value = ''
-  try {
-    const result = await post<{ exit_code: number; stdout: string; stderr: string }>(
-      `/vps/${host.value}/exec`,
-      { command: execCommand.value },
-    )
-    execOutput.value = result.stdout + (result.stderr ? '\n' + result.stderr : '')
-  } catch (e: any) {
-    execOutput.value = `Fehler: ${e.detail || e}`
-  } finally {
-    execLoading.value = false
-  }
-}
 </script>
 
 <template>
@@ -91,11 +71,11 @@ async function runExec() {
           :disabled="task.running.value"
         />
         <Button
-          :label="showTerminal ? 'Terminal schließen' : 'Terminal'"
-          icon="pi pi-code"
-          :severity="showTerminal ? 'warn' : 'info'"
-          :outlined="!showTerminal"
-          @click="showTerminal = !showTerminal"
+          :label="terminalCount === 1 ? 'Terminal teilen' : 'Terminal schließen'"
+          :icon="terminalCount === 1 ? 'pi pi-clone' : 'pi pi-times'"
+          :severity="terminalCount === 1 ? 'info' : 'warn'"
+          :outlined="terminalCount === 1"
+          @click="terminalCount = terminalCount === 1 ? 2 : 1"
         />
         <Button
           label="Neustart"
@@ -161,36 +141,13 @@ async function runExec() {
     </div>
 
     <!-- Interaktives Terminal -->
-    <Card v-if="showTerminal" class="section">
+    <Card class="section">
       <template #title>Terminal</template>
       <template #content>
-        <WebTerminal :host="host" :active="showTerminal" />
-      </template>
-    </Card>
-
-    <!-- Befehl ausführen -->
-    <Card class="section">
-      <template #title>Befehl ausführen</template>
-      <template #content>
-        <div class="exec-form">
-          <InputText
-            v-model="execCommand"
-            placeholder="z.B. df -h, htop, docker ps"
-            class="exec-input"
-            @keyup.enter="runExec"
-          />
-          <Button
-            label="Ausführen"
-            icon="pi pi-play"
-            @click="runExec"
-            :loading="execLoading"
-          />
+        <div class="terminal-grid" :class="{ split: terminalCount === 2 }">
+          <WebTerminal :host="host" :key="'term-1'" />
+          <WebTerminal v-if="terminalCount === 2" :host="host" :key="'term-2'" />
         </div>
-        <LiveTerminal
-          v-if="execOutput"
-          :lines="execOutput.split('\n')"
-          class="exec-terminal"
-        />
       </template>
     </Card>
 
@@ -271,17 +228,13 @@ async function runExec() {
   margin-bottom: 1.5rem;
 }
 
-.exec-form {
-  display: flex;
-  gap: 0.5rem;
-  margin-bottom: 0.75rem;
+.terminal-grid {
+  display: grid;
+  grid-template-columns: 1fr;
+  gap: 0.75rem;
 }
 
-.exec-input {
-  flex: 1;
-}
-
-.exec-terminal {
-  margin-top: 0.75rem;
+.terminal-grid.split {
+  grid-template-columns: 1fr 1fr;
 }
 </style>

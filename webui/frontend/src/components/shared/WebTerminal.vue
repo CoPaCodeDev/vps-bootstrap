@@ -1,5 +1,5 @@
 <script setup lang="ts">
-import { ref, onMounted, onBeforeUnmount, watch } from 'vue'
+import { ref, onMounted, onBeforeUnmount } from 'vue'
 import { Terminal } from '@xterm/xterm'
 import { FitAddon } from '@xterm/addon-fit'
 import { WebLinksAddon } from '@xterm/addon-web-links'
@@ -8,7 +8,6 @@ import '@xterm/xterm/css/xterm.css'
 
 const props = defineProps<{
   host: string
-  active: boolean
 }>()
 
 const emit = defineEmits<{
@@ -127,32 +126,18 @@ function cleanup() {
 }
 
 onMounted(() => {
-  if (props.active) {
-    initTerminal()
-  }
+  initTerminal()
 })
 
 onBeforeUnmount(() => {
   cleanup()
 })
-
-watch(
-  () => props.active,
-  (active) => {
-    if (active) {
-      // Kurz warten bis DOM gerendert ist
-      setTimeout(() => initTerminal(), 50)
-    } else {
-      cleanup()
-    }
-  },
-)
 </script>
 
 <template>
   <div class="web-terminal">
     <div ref="terminalRef" class="terminal-container"></div>
-    <div v-if="!socket.connected.value && props.active" class="terminal-overlay">
+    <div v-if="!socket.connected.value" class="terminal-overlay">
       <i class="pi pi-spin pi-spinner"></i>
       <span>Verbinde...</span>
     </div>
