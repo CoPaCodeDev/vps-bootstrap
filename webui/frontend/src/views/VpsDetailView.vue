@@ -31,7 +31,7 @@ const terminalCount = ref(1)
 // Upload / Dateibrowser
 const showUpload = ref(false)
 const browsePath = ref('/home/master')
-const browseEntries = ref<{ name: string; type: string; size: string; modified: string }[]>([])
+const browseEntries = ref<{ name: string; type: string; size: string; modified: string; permissions: string }[]>([])
 const browseLoading = ref(false)
 const selectedFiles = ref<File[]>([])
 const uploading = ref(false)
@@ -364,23 +364,35 @@ async function doReboot() {
 
     <!-- Upload mit Dateibrowser -->
     <Card v-if="showUpload" class="section">
-      <template #title>Datei hochladen</template>
+      <template #title>
+        <div class="card-header-with-close">
+          <span>Datei hochladen</span>
+          <Button
+            icon="pi pi-times"
+            text
+            rounded
+            size="small"
+            severity="secondary"
+            @click="showUpload = false"
+          />
+        </div>
+      </template>
       <template #content>
         <div class="upload-layout">
-          <!-- Links: Ordner-Tree -->
-          <div class="tree-panel">
-            <Tree
-              :value="treeNodes"
-              v-model:selectionKeys="selectedTreeKey"
-              v-model:expandedKeys="expandedKeys"
-              selectionMode="single"
-              class="explorer-tree"
-              @node-expand="onTreeExpand"
-              @node-select="onTreeSelect"
-            />
-          </div>
-          <!-- Mitte: Remote-Dateibrowser (Explorer-Stil) -->
-          <div class="file-browser">
+          <!-- Oben: Tree + Dateibrowser -->
+          <div class="browser-row">
+            <div class="tree-panel">
+              <Tree
+                :value="treeNodes"
+                v-model:selectionKeys="selectedTreeKey"
+                v-model:expandedKeys="expandedKeys"
+                selectionMode="single"
+                class="explorer-tree"
+                @node-expand="onTreeExpand"
+                @node-select="onTreeSelect"
+              />
+            </div>
+            <div class="file-browser">
             <!-- Explorer-Toolbar -->
             <div class="explorer-toolbar">
               <div class="explorer-nav">
@@ -490,6 +502,11 @@ async function doReboot() {
                     {{ data.type === 'file' ? data.size : '' }}
                   </template>
                 </Column>
+                <Column field="permissions" header="Rechte" sortable style="width: 120px">
+                  <template #body="{ data }">
+                    <span class="permissions-cell">{{ data.permissions }}</span>
+                  </template>
+                </Column>
                 <Column field="modified" header="Geändert" sortable style="width: 160px" />
               </DataTable>
               <div v-if="browseEntries.length === 0" class="empty-dir">Verzeichnis ist leer</div>
@@ -500,7 +517,8 @@ async function doReboot() {
               {{ folderCount }} Ordner, {{ fileCount }} Dateien
             </div>
           </div>
-          <!-- Rechts: Upload-Zone -->
+          </div>
+          <!-- Unten: Upload-Zone -->
           <div class="upload-zone-container">
             <div class="upload-target">
               <i class="pi pi-folder-open"></i>
@@ -657,9 +675,21 @@ async function doReboot() {
 
 /* Upload-Layout */
 .upload-layout {
-  display: grid;
-  grid-template-columns: 220px 1fr 1fr;
+  display: flex;
+  flex-direction: column;
   gap: 1.5rem;
+}
+
+.browser-row {
+  display: grid;
+  grid-template-columns: 220px 1fr;
+  gap: 1rem;
+}
+
+.card-header-with-close {
+  display: flex;
+  justify-content: space-between;
+  align-items: center;
 }
 
 /* Tree-Panel */
@@ -842,6 +872,12 @@ async function doReboot() {
 
 .dir-name {
   font-weight: 500;
+}
+
+.permissions-cell {
+  font-family: monospace;
+  font-size: 0.8rem;
+  color: var(--p-text-muted-color);
 }
 
 /* Statusleiste */

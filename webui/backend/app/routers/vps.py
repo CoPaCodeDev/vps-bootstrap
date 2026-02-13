@@ -222,6 +222,7 @@ async def list_files(
             "type": "dir" if is_dir else "file",
             "size": parts[4],
             "modified": f"{parts[5]} {parts[6]}",
+            "permissions": parts[0],
         })
 
     return {"path": path, "entries": entries}
