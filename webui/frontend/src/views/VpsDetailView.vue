@@ -1,5 +1,5 @@
 <script setup lang="ts">
-import { ref, onMounted, computed } from 'vue'
+import { ref, onMounted, onBeforeUnmount, computed } from 'vue'
 import { useRoute } from 'vue-router'
 import { useVpsStore } from '@/stores/vps'
 import { useApi } from '@/composables/useApi'
@@ -21,14 +21,23 @@ const task = useTaskStream()
 
 const status = computed(() => vpsStore.statuses[host.value])
 const showRebootConfirm = ref(false)
+const showTaskOutput = ref(false)
 const terminalCount = ref(1)
+
+let refreshInterval: ReturnType<typeof setInterval> | null = null
 
 onMounted(async () => {
   await vpsStore.fetchHosts()
   await vpsStore.fetchStatus(host.value)
+  refreshInterval = setInterval(() => vpsStore.fetchStatus(host.value), 10000)
+})
+
+onBeforeUnmount(() => {
+  if (refreshInterval) clearInterval(refreshInterval)
 })
 
 async function startUpdate() {
+  showTaskOutput.value = true
   await task.startTask(`/vps/${host.value}/update`)
   toast.add({ severity: 'info', summary: 'Update gestartet', life: 3000 })
 }
@@ -57,12 +66,6 @@ async function doReboot() {
         <VpsStatusBadge v-if="status" :online="status.online" />
       </div>
       <div class="actions">
-        <Button
-          label="Aktualisieren"
-          icon="pi pi-refresh"
-          text
-          @click="vpsStore.fetchStatus(host)"
-        />
         <Button
           label="Update"
           icon="pi pi-download"
@@ -152,8 +155,20 @@ async function doReboot() {
     </Card>
 
     <!-- Task-Output -->
-    <Card v-if="task.output.value.length > 0" class="section">
-      <template #title>Task-Ausgabe</template>
+    <Card v-if="showTaskOutput" class="section">
+      <template #title>
+        <div class="task-header">
+          <span>Task-Ausgabe</span>
+          <Button
+            icon="pi pi-times"
+            text
+            rounded
+            size="small"
+            severity="secondary"
+            @click="showTaskOutput = false"
+          />
+        </div>
+      </template>
       <template #content>
         <LiveTerminal :lines="task.output.value" :running="task.running.value" />
       </template>
@@ -236,5 +251,11 @@ async function doReboot() {
 
 .terminal-grid.split {
   grid-template-columns: 1fr 1fr;
+}
+
+.task-header {
+  display: flex;
+  justify-content: space-between;
+  align-items: center;
 }
 </style>
