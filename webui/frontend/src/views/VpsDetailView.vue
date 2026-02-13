@@ -12,6 +12,8 @@ import Card from 'primevue/card'
 import Button from 'primevue/button'
 import DataTable from 'primevue/datatable'
 import Column from 'primevue/column'
+import Tree from 'primevue/tree'
+import type { TreeNode } from 'primevue/treenode'
 import { useToast } from 'primevue/usetoast'
 
 const route = useRoute()
@@ -37,6 +39,12 @@ const fileInput = ref<HTMLInputElement | null>(null)
 const viewMode = ref<'grid' | 'list'>('grid')
 const browseHistory = ref<string[]>([])
 const historyIndex = ref(-1)
+
+// Tree
+const treeNodes = ref<TreeNode[]>([])
+const selectedTreeKey = ref<Record<string, boolean>>({})
+const expandedKeys = ref<Record<string, boolean>>({})
+const treeInitialized = ref(false)
 
 const folderCount = computed(() => browseEntries.value.filter(e => e.type === 'dir').length)
 const fileCount = computed(() => browseEntries.value.filter(e => e.type === 'file').length)
@@ -70,6 +78,7 @@ async function loadDirectory(path: string, addToHistory = true) {
     )
     browsePath.value = data.path
     browseEntries.value = data.entries
+    selectedTreeKey.value = { [data.path]: true }
     if (addToHistory) {
       // Truncate forward history when navigating to a new path
       browseHistory.value = browseHistory.value.slice(0, historyIndex.value + 1)
@@ -103,6 +112,66 @@ function goUp() {
   if (browsePath.value === '/') return
   const parent = browsePath.value.substring(0, browsePath.value.lastIndexOf('/')) || '/'
   loadDirectory(parent)
+}
+
+async function loadTreeChildren(path: string): Promise<TreeNode[]> {
+  try {
+    const data = await get<{ path: string; entries: typeof browseEntries.value }>(
+      `/vps/${host.value}/files?path=${encodeURIComponent(path)}`
+    )
+    return data.entries
+      .filter(e => e.type === 'dir')
+      .map(e => ({
+        key: path === '/' ? `/${e.name}` : `${path}/${e.name}`,
+        label: e.name,
+        icon: 'pi pi-folder',
+        leaf: false,
+        children: [] as TreeNode[]
+      }))
+  } catch {
+    return []
+  }
+}
+
+async function initTree() {
+  const rootChildren = await loadTreeChildren('/')
+  treeNodes.value = rootChildren
+  expandedKeys.value = {}
+  // Automatisch bis /home/master expandieren
+  const pathParts = '/home/master'.split('/').filter(Boolean)
+  let currentPath = ''
+  for (const part of pathParts) {
+    currentPath += '/' + part
+    expandedKeys.value[currentPath] = true
+    // Node im Baum finden und Kinder laden
+    const node = findTreeNode(treeNodes.value, currentPath)
+    if (node) {
+      node.children = await loadTreeChildren(currentPath)
+    }
+  }
+  selectedTreeKey.value = { [browsePath.value]: true }
+  treeInitialized.value = true
+}
+
+function findTreeNode(nodes: TreeNode[], key: string): TreeNode | null {
+  for (const node of nodes) {
+    if (node.key === key) return node
+    if (node.children) {
+      const found = findTreeNode(node.children, key)
+      if (found) return found
+    }
+  }
+  return null
+}
+
+async function onTreeExpand(node: TreeNode) {
+  if (!node.children || node.children.length === 0) {
+    node.children = await loadTreeChildren(node.key as string)
+  }
+}
+
+function onTreeSelect(node: TreeNode) {
+  loadDirectory(node.key as string)
 }
 
 function onFileDrop(event: DragEvent) {
@@ -150,6 +219,9 @@ function toggleUpload() {
   showUpload.value = !showUpload.value
   if (showUpload.value) {
     loadDirectory(browsePath.value)
+    if (!treeInitialized.value) {
+      initTree()
+    }
   }
 }
 
@@ -295,7 +367,19 @@ async function doReboot() {
       <template #title>Datei hochladen</template>
       <template #content>
         <div class="upload-layout">
-          <!-- Links: Remote-Dateibrowser (Explorer-Stil) -->
+          <!-- Links: Ordner-Tree -->
+          <div class="tree-panel">
+            <Tree
+              :value="treeNodes"
+              v-model:selectionKeys="selectedTreeKey"
+              v-model:expandedKeys="expandedKeys"
+              selectionMode="single"
+              class="explorer-tree"
+              @node-expand="onTreeExpand"
+              @node-select="onTreeSelect"
+            />
+          </div>
+          <!-- Mitte: Remote-Dateibrowser (Explorer-Stil) -->
           <div class="file-browser">
             <!-- Explorer-Toolbar -->
             <div class="explorer-toolbar">
@@ -574,8 +658,50 @@ async function doReboot() {
 /* Upload-Layout */
 .upload-layout {
   display: grid;
-  grid-template-columns: 1fr 1fr;
+  grid-template-columns: 220px 1fr 1fr;
   gap: 1.5rem;
+}
+
+/* Tree-Panel */
+.tree-panel {
+  overflow-y: auto;
+  max-height: 500px;
+  border-right: 1px solid var(--p-surface-200);
+  padding-right: 0.5rem;
+}
+
+.explorer-tree :deep(.p-tree) {
+  padding: 0;
+  border: none;
+  background: transparent;
+}
+
+.explorer-tree :deep(.p-tree-node-label) {
+  font-size: 0.8rem;
+}
+
+.explorer-tree :deep(.p-tree-node-content) {
+  padding: 0.15rem 0.35rem;
+  border-radius: 4px;
+}
+
+.explorer-tree :deep(.p-tree-node-content:hover) {
+  background: var(--p-surface-100);
+}
+
+.explorer-tree :deep(.p-tree-node-content.p-tree-node-selected) {
+  background: var(--p-primary-100);
+  color: var(--p-primary-700);
+}
+
+.explorer-tree :deep(.p-tree-node-icon) {
+  color: #e8a838;
+  font-size: 0.9rem;
+}
+
+.explorer-tree :deep(.p-tree-toggler) {
+  width: 1.25rem;
+  height: 1.25rem;
 }
 
 /* Explorer-Toolbar */
