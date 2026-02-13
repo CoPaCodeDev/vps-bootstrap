@@ -36,7 +36,6 @@ const browseLoading = ref(false)
 const selectedFiles = ref<File[]>([])
 const uploading = ref(false)
 const fileInput = ref<HTMLInputElement | null>(null)
-const viewMode = ref<'grid' | 'list'>('grid')
 const browseHistory = ref<string[]>([])
 const historyIndex = ref(-1)
 
@@ -172,6 +171,12 @@ async function onTreeExpand(node: TreeNode) {
 
 function onTreeSelect(node: TreeNode) {
   loadDirectory(node.key as string)
+}
+
+function downloadFile(name: string) {
+  const filePath = browsePath.value === '/' ? `/${name}` : `${browsePath.value}/${name}`
+  const url = `/api/v1/vps/${host.value}/download?path=${encodeURIComponent(filePath)}`
+  window.open(url, '_blank')
 }
 
 function onFileDrop(event: DragEvent) {
@@ -428,24 +433,12 @@ async function doReboot() {
               </div>
               <div class="explorer-view-toggle">
                 <Button
-                  icon="pi pi-th-large"
+                  icon="pi pi-refresh"
                   text
                   rounded
                   size="small"
-                  :severity="viewMode === 'grid' ? 'primary' : 'secondary'"
-                  :class="{ 'view-active': viewMode === 'grid' }"
-                  @click="viewMode = 'grid'"
-                  v-tooltip.bottom="'Rasteransicht'"
-                />
-                <Button
-                  icon="pi pi-list"
-                  text
-                  rounded
-                  size="small"
-                  :severity="viewMode === 'list' ? 'primary' : 'secondary'"
-                  :class="{ 'view-active': viewMode === 'list' }"
-                  @click="viewMode = 'list'"
-                  v-tooltip.bottom="'Listenansicht'"
+                  @click="loadDirectory(browsePath)"
+                  v-tooltip.bottom="'Aktualisieren'"
                 />
               </div>
             </div>
@@ -455,33 +448,14 @@ async function doReboot() {
               <i class="pi pi-spin pi-spinner"></i> Lade...
             </div>
 
-            <!-- Grid-Ansicht -->
-            <div v-else-if="viewMode === 'grid'" class="explorer-grid">
-              <div
-                v-for="entry in browseEntries"
-                :key="entry.name"
-                class="explorer-grid-item"
-                :class="{ 'is-dir': entry.type === 'dir' }"
-                @dblclick="entry.type === 'dir' && enterDirectory(entry.name)"
-              >
-                <i
-                  :class="entry.type === 'dir' ? 'pi pi-folder' : `pi ${fileIcon(entry.name)}`"
-                  class="grid-icon"
-                  :style="entry.type === 'dir' ? 'color: #e8a838' : ''"
-                ></i>
-                <span class="grid-label">{{ entry.name }}</span>
-              </div>
-              <div v-if="browseEntries.length === 0" class="empty-dir">Verzeichnis ist leer</div>
-            </div>
-
-            <!-- Listen-Ansicht -->
+            <!-- Dateiliste -->
             <div v-else class="explorer-list">
               <DataTable
                 :value="browseEntries"
                 size="small"
                 stripedRows
                 scrollable
-                scrollHeight="400px"
+                scrollHeight="flex"
                 @row-dblclick="(e: any) => e.data.type === 'dir' && enterDirectory(e.data.name)"
                 class="explorer-table"
               >
@@ -508,6 +482,20 @@ async function doReboot() {
                   </template>
                 </Column>
                 <Column field="modified" header="Geändert" sortable style="width: 160px" />
+                <Column header="" style="width: 50px; text-align: center">
+                  <template #body="{ data }">
+                    <Button
+                      v-if="data.type === 'file'"
+                      icon="pi pi-download"
+                      text
+                      rounded
+                      size="small"
+                      severity="secondary"
+                      @click="downloadFile(data.name)"
+                      v-tooltip.bottom="'Herunterladen'"
+                    />
+                  </template>
+                </Column>
               </DataTable>
               <div v-if="browseEntries.length === 0" class="empty-dir">Verzeichnis ist leer</div>
             </div>
@@ -684,6 +672,13 @@ async function doReboot() {
   display: grid;
   grid-template-columns: 220px 1fr;
   gap: 1rem;
+  height: 500px;
+}
+
+.file-browser {
+  display: flex;
+  flex-direction: column;
+  min-height: 0;
 }
 
 .card-header-with-close {
@@ -695,7 +690,6 @@ async function doReboot() {
 /* Tree-Panel */
 .tree-panel {
   overflow-y: auto;
-  max-height: 500px;
   border-right: 1px solid var(--p-surface-200);
   padding-right: 0.5rem;
 }
@@ -780,16 +774,6 @@ async function doReboot() {
   margin: 0 0.1rem;
 }
 
-.explorer-view-toggle {
-  display: flex;
-  gap: 0.1rem;
-  flex-shrink: 0;
-}
-
-.view-active {
-  background: var(--p-surface-200) !important;
-}
-
 /* Loading */
 .browse-loading {
   padding: 2rem;
@@ -797,61 +781,13 @@ async function doReboot() {
   color: var(--p-text-muted-color);
 }
 
-/* Grid-Ansicht */
-.explorer-grid {
-  display: grid;
-  grid-template-columns: repeat(auto-fill, minmax(90px, 1fr));
-  gap: 0.25rem;
-  max-height: 400px;
-  overflow-y: auto;
-  border: 1px solid var(--p-surface-200);
-  border-radius: var(--p-border-radius);
-  padding: 0.5rem;
-}
-
-.explorer-grid-item {
-  display: flex;
-  flex-direction: column;
-  align-items: center;
-  text-align: center;
-  padding: 0.75rem 0.5rem;
-  border-radius: 6px;
-  cursor: default;
-  user-select: none;
-  transition: background 0.15s;
-}
-
-.explorer-grid-item.is-dir {
-  cursor: pointer;
-}
-
-.explorer-grid-item:hover {
-  background: var(--p-surface-100);
-}
-
-.grid-icon {
-  font-size: 2.5rem;
-  margin-bottom: 0.35rem;
-  color: var(--p-text-muted-color);
-}
-
-.grid-label {
-  font-size: 0.75rem;
-  line-height: 1.2;
-  max-width: 100%;
-  overflow: hidden;
-  text-overflow: ellipsis;
-  display: -webkit-box;
-  -webkit-line-clamp: 2;
-  -webkit-box-orient: vertical;
-  word-break: break-all;
-}
-
 /* Listen-Ansicht */
 .explorer-list {
   border: 1px solid var(--p-surface-200);
   border-radius: var(--p-border-radius);
   overflow: hidden;
+  flex: 1;
+  min-height: 0;
 }
 
 .explorer-table :deep(.p-datatable-row-action) {

@@ -4,12 +4,13 @@ import shlex
 import uuid
 
 from fastapi import APIRouter, Depends, HTTPException, UploadFile, File, Form
+from fastapi.responses import FileResponse
 
 from ..dependencies import get_current_user
 from ..models.vps import VPS, VPSStatus, ExecRequest
 from ..models.task import TaskCreate
 from ..services.hosts import parse_hosts_file, resolve_host
-from ..services.ssh import run_ssh, run_ssh_stream, check_host_online, scp_upload
+from ..services.ssh import run_ssh, run_ssh_stream, check_host_online, scp_upload, scp_download
 from ..services.task_manager import task_manager
 
 router = APIRouter(prefix="/vps", tags=["VPS"])
@@ -274,3 +275,29 @@ async def upload_file(
         coro_factory=do_upload,
     )
     return TaskCreate(task_id=task_id)
+
+
+@router.get("/{host}/download")
+async def download_file(
+    host: str, path: str, user: str = Depends(get_current_user)
+):
+    """Lädt eine Datei per SCP von einem VPS herunter."""
+    ip = resolve_host(host)
+    if not ip:
+        raise HTTPException(status_code=404, detail=f"Host '{host}' nicht gefunden")
+
+    path = _validate_remote_path(path)
+    filename = os.path.basename(path)
+    tmp_path = f"/tmp/vps-download-{uuid.uuid4()}"
+
+    rc, err = await scp_download(ip, path, tmp_path)
+    if rc != 0:
+        if os.path.exists(tmp_path):
+            os.remove(tmp_path)
+        raise HTTPException(status_code=400, detail=f"Download fehlgeschlagen: {err}")
+
+    return FileResponse(
+        tmp_path,
+        filename=filename,
+        media_type="application/octet-stream",
+    )
