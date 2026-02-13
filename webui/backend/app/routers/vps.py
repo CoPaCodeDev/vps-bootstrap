@@ -82,7 +82,7 @@ async def get_vps_status(host: str, user: str = Depends(get_current_user)):
 
     # Parallel Status-Informationen sammeln
     cmds = {
-        "updates": "apt list --upgradable 2>/dev/null | grep -c upgradable || echo 0",
+        "updates": "LC_ALL=C apt list --upgradable 2>/dev/null | grep -c upgradable; true",
         "reboot": "[ -f /var/run/reboot-required ] && echo ja || echo nein",
         "load": "uptime | awk -F'load average:' '{print $2}' | awk -F, '{print $1}' | tr -d ' '",
         "uptime": "uptime -p 2>/dev/null || uptime | awk '{print $3, $4}'",
@@ -103,9 +103,11 @@ async def get_vps_status(host: str, user: str = Depends(get_current_user)):
 
     await asyncio.gather(*async_tasks, return_exceptions=True)
 
-    # Memory/Disk parsen
-    memory_parts = results.get("memory", "|").split("|")
-    disk_parts = results.get("disk", "|").split("|")
+    # Memory/Disk parsen (Fallback bei leerem Ergebnis)
+    memory_raw = results.get("memory", "")
+    memory_parts = memory_raw.split("|") if "|" in memory_raw else []
+    disk_raw = results.get("disk", "")
+    disk_parts = disk_raw.split("|") if "|" in disk_raw else []
 
     updates_str = results.get("updates", "0").strip()
     try:
@@ -116,15 +118,15 @@ async def get_vps_status(host: str, user: str = Depends(get_current_user)):
     return VPSStatus(
         host=host,
         online=True,
-        load=results.get("load", ""),
-        uptime=results.get("uptime", ""),
+        load=results.get("load", "").strip(),
+        uptime=results.get("uptime", "").strip(),
         updates_available=updates_count,
         reboot_required=results.get("reboot", "nein").strip() == "ja",
-        kernel=results.get("kernel", ""),
-        memory_used=memory_parts[0] if len(memory_parts) > 0 else "",
-        memory_total=memory_parts[1] if len(memory_parts) > 1 else "",
-        disk_used=disk_parts[0] if len(disk_parts) > 0 else "",
-        disk_total=disk_parts[1] if len(disk_parts) > 1 else "",
+        kernel=results.get("kernel", "").strip(),
+        memory_used=memory_parts[0].strip() if len(memory_parts) >= 2 else "",
+        memory_total=memory_parts[1].strip() if len(memory_parts) >= 2 else "",
+        disk_used=disk_parts[0].strip() if len(disk_parts) >= 2 else "",
+        disk_total=disk_parts[1].strip() if len(disk_parts) >= 2 else "",
     )
 
 
