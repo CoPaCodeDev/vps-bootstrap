@@ -25,7 +25,7 @@ async def run_ssh(
     target = settings.proxy_host if host in ("proxy", "localhost") else host
 
     ssh_cmd = (
-        f"ssh -o StrictHostKeyChecking=no -o UserKnownHostsFile=/dev/null "
+        f"ssh -o StrictHostKeyChecking=no -o UserKnownHostsFile=/dev/null -o LogLevel=ERROR "
         f"-o ConnectTimeout={effective_timeout} "
         f"-o BatchMode=yes -i {settings.ssh_key_path} "
         f"{settings.ssh_user}@{target} {shlex.quote(command)}"
@@ -63,7 +63,7 @@ async def run_ssh_stream(
     target = settings.proxy_host if host in ("proxy", "localhost") else host
 
     ssh_cmd = (
-        f"ssh -o StrictHostKeyChecking=no -o UserKnownHostsFile=/dev/null "
+        f"ssh -o StrictHostKeyChecking=no -o UserKnownHostsFile=/dev/null -o LogLevel=ERROR "
         f"-o ConnectTimeout={settings.ssh_timeout} "
         f"-o BatchMode=yes -i {settings.ssh_key_path} "
         f"{settings.ssh_user}@{target} {shlex.quote(command)}"
