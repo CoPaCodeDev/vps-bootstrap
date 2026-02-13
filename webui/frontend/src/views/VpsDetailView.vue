@@ -6,6 +6,7 @@ import { useApi } from '@/composables/useApi'
 import { useTaskStream } from '@/composables/useTaskStream'
 import VpsStatusBadge from '@/components/vps/VpsStatusBadge.vue'
 import LiveTerminal from '@/components/shared/LiveTerminal.vue'
+import WebTerminal from '@/components/shared/WebTerminal.vue'
 import ConfirmDialog from '@/components/shared/ConfirmDialog.vue'
 import Card from 'primevue/card'
 import Button from 'primevue/button'
@@ -24,6 +25,7 @@ const execCommand = ref('')
 const execOutput = ref('')
 const execLoading = ref(false)
 const showRebootConfirm = ref(false)
+const showTerminal = ref(false)
 
 onMounted(async () => {
   await vpsStore.fetchHosts()
@@ -89,6 +91,13 @@ async function runExec() {
           :disabled="task.running.value"
         />
         <Button
+          :label="showTerminal ? 'Terminal schließen' : 'Terminal'"
+          icon="pi pi-code"
+          :severity="showTerminal ? 'warn' : 'info'"
+          :outlined="!showTerminal"
+          @click="showTerminal = !showTerminal"
+        />
+        <Button
           label="Neustart"
           icon="pi pi-power-off"
           severity="danger"
@@ -150,6 +159,14 @@ async function runExec() {
         </template>
       </Card>
     </div>
+
+    <!-- Interaktives Terminal -->
+    <Card v-if="showTerminal" class="section">
+      <template #title>Terminal</template>
+      <template #content>
+        <WebTerminal :host="host" :active="showTerminal" />
+      </template>
+    </Card>
 
     <!-- Befehl ausführen -->
     <Card class="section">
