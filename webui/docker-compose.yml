@@ -1,0 +1,30 @@
+# Development Docker Compose
+# Starten mit: docker compose up
+services:
+  backend:
+    build: ./backend
+    command: uvicorn app.main:app --host 0.0.0.0 --port 8000 --reload
+    ports:
+      - "8000:8000"
+    volumes:
+      - ./backend/app:/app/app
+      # Entwicklung: lokale Dummy-Dateien oder echte Proxy-Pfade
+      # - /etc/vps-hosts:/etc/vps-hosts:ro
+      # - /home/master/.ssh:/home/master/.ssh:ro
+    environment:
+      - VPS_DASHBOARD_DEBUG=true
+    restart: unless-stopped
+
+  frontend:
+    build:
+      context: ./frontend
+      target: build
+    command: npx vite --host 0.0.0.0
+    ports:
+      - "5173:5173"
+    volumes:
+      - ./frontend/src:/app/src
+      - ./frontend/index.html:/app/index.html
+    environment:
+      - VITE_API_URL=http://localhost:8000
+    restart: unless-stopped

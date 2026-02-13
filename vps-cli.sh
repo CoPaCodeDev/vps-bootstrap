@@ -18,6 +18,7 @@ TRAEFIK_DIR="/opt/traefik"
 AUTHELIA_DIR="/opt/authelia"
 VPS_HOME="/opt/vps"
 TEMPLATES_DIR="${VPS_HOME}/templates"
+DASHBOARD_DIR="${VPS_HOME}/webui"
 
 # Netcup SCP API Konfiguration
 NETCUP_CONFIG="${HOME}/.config/vps-cli/netcup"
@@ -1114,7 +1115,11 @@ cmd_authelia_setup() {
     echo "  Authelia:       https://$auth_domain"
     echo "  Cookie-Domains:"
     for d in "${cookie_domains[@]}"; do
-        echo "    - $d"
+        echo "    - $d (auth: auth.${d})"
+    done
+    echo "  DNS benötigt:"
+    for d in "${cookie_domains[@]}"; do
+        echo "    - auth.${d} -> Proxy-Public-IP"
     done
     echo "  Admin-User:     $admin_user ($admin_displayname)"
     echo "  E-Mail:         $admin_email"
@@ -1149,17 +1154,47 @@ cmd_authelia_setup() {
     # Konfigurationsdateien kopieren
     echo "Kopiere Konfigurationsdateien..."
 
-    # docker-compose.yml
-    sed "s/\${AUTH_DOMAIN}/${auth_domain}/g" \
-        "${TEMPLATES_DIR}/authelia/docker-compose.yml" | proxy_write "${AUTHELIA_DIR}/docker-compose.yml"
+    # docker-compose.yml (ohne Traefik-Labels, Routing über File-Provider)
+    cat "${TEMPLATES_DIR}/authelia/docker-compose.yml" | proxy_write "${AUTHELIA_DIR}/docker-compose.yml"
+
+    # Traefik-Route für alle Auth-Domains erstellen (File-Provider)
+    echo "Erstelle Traefik-Routen für Auth-Domains..."
+    local route_file
+    route_file=$(mktemp)
+    cat > "$route_file" <<'ROUTE_HEADER'
+http:
+  routers:
+ROUTE_HEADER
+    for d in "${cookie_domains[@]}"; do
+        local auth_d="auth.${d}"
+        local route_name="authelia-${d//\./-}"
+        cat >> "$route_file" <<ROUTE_ROUTER
+    ${route_name}:
+      rule: "Host(\`${auth_d}\`)"
+      entryPoints:
+        - websecure
+      service: authelia-svc
+      tls:
+        certResolver: letsencrypt
+ROUTE_ROUTER
+    done
+    cat >> "$route_file" <<'ROUTE_SVC'
+  services:
+    authelia-svc:
+      loadBalancer:
+        servers:
+          - url: "http://authelia:9091"
+ROUTE_SVC
+    cat "$route_file" | proxy_write "${TRAEFIK_DIR}/conf.d/_authelia-portal.yml"
+    rm -f "$route_file"
 
     # Cookie-Domains-Block generieren (Temp-Datei für Multiline-Ersetzung)
     local cookie_block_file
     cookie_block_file=$(mktemp)
     for d in "${cookie_domains[@]}"; do
         echo "    - domain: '${d}'" >> "$cookie_block_file"
-        echo "      authelia_url: 'https://${auth_domain}'" >> "$cookie_block_file"
-        echo "      default_redirection_url: 'https://${auth_domain}'" >> "$cookie_block_file"
+        echo "      authelia_url: 'https://auth.${d}'" >> "$cookie_block_file"
+        echo "      default_redirection_url: 'https://${d}'" >> "$cookie_block_file"
     done
 
     # configuration.yml
@@ -1206,7 +1241,10 @@ cmd_authelia_setup() {
     echo "Portal: https://$auth_domain"
     echo "Login:  $admin_user / ********"
     echo ""
-    echo "Hinweis: DNS-Eintrag für '$auth_domain' muss auf die Proxy-Public-IP zeigen."
+    echo "Hinweis: DNS-Einträge müssen auf die Proxy-Public-IP zeigen:"
+    for d in "${cookie_domains[@]}"; do
+        echo "  - auth.${d}"
+    done
     echo ""
     echo "Routen mit Authelia absichern:"
     echo "  vps route add --auth <domain> <host> <port>    # Neue Route mit Auth"
@@ -1457,7 +1495,7 @@ cmd_authelia_domain_add() {
     fi
 
     # Neuen Cookie-Block vor dem redis:-Abschnitt einfügen
-    proxy_exec "sudo sed -i '/^  redis:/i\\    - domain: '\''${new_domain}'\''\\n      authelia_url: '\''${auth_url}'\''\\n      default_redirection_url: '\''${auth_url}'\''' ${config_file}"
+    proxy_exec "sudo sed -i '/^  redis:/i\\    - domain: '\''${new_domain}'\''\\n      authelia_url: '\''https://auth.${new_domain}'\''\\n      default_redirection_url: '\''https://${new_domain}'\''' ${config_file}"
 
     # Authelia neu starten
     echo "Starte Authelia neu..."
@@ -1540,6 +1578,172 @@ cmd_authelia_domain_remove() {
     else
         echo "Abgebrochen."
     fi
+}
+
+# === DASHBOARD ===
+
+cmd_dashboard() {
+    local subcmd="$1"
+    shift 2>/dev/null || true
+
+    case "$subcmd" in
+        setup)
+            cmd_dashboard_setup "$@"
+            ;;
+        status)
+            cmd_dashboard_status
+            ;;
+        logs)
+            cmd_dashboard_logs "$@"
+            ;;
+        restart)
+            cmd_dashboard_restart
+            ;;
+        update)
+            cmd_dashboard_update
+            ;;
+        help|"")
+            cmd_dashboard_help
+            ;;
+        *)
+            print_error "Unbekannter Dashboard-Befehl: $subcmd"
+            cmd_dashboard_help
+            exit 1
+            ;;
+    esac
+}
+
+cmd_dashboard_help() {
+    echo "=== Dashboard - Web-Oberfläche ==="
+    echo ""
+    echo "Das Dashboard bietet eine Web-Oberfläche zur Verwaltung aller VPS."
+    echo "Es läuft auf dem Proxy und wird über Traefik geroutet."
+    echo ""
+    echo "Einrichtung:"
+    echo "  vps dashboard setup              Interaktive Ersteinrichtung"
+    echo ""
+    echo "Status & Verwaltung:"
+    echo "  vps dashboard status             Container-Status anzeigen"
+    echo "  vps dashboard logs [zeilen]      Logs anzeigen (Standard: 50)"
+    echo "  vps dashboard restart            Dashboard neu starten"
+    echo "  vps dashboard update             Dashboard neu bauen und starten"
+    echo ""
+    echo "Hinweis: DNS-Eintrag muss auf die Proxy-Public-IP zeigen."
+}
+
+cmd_dashboard_setup() {
+    echo "=== Dashboard Setup ==="
+    echo ""
+
+    # Prüfe ob Traefik installiert ist
+    if ! proxy_exec "test -f ${TRAEFIK_DIR}/docker-compose.yml" 2>/dev/null; then
+        print_error "Traefik ist nicht installiert. Führe zuerst 'vps traefik setup' aus."
+        exit 1
+    fi
+
+    # Prüfe ob Docker installiert ist
+    if ! proxy_exec "command -v docker" &>/dev/null; then
+        print_error "Docker ist nicht installiert."
+        exit 1
+    fi
+
+    # Prüfe ob webui-Verzeichnis existiert
+    if ! proxy_exec "test -d ${DASHBOARD_DIR}" 2>/dev/null; then
+        print_error "Dashboard-Verzeichnis ${DASHBOARD_DIR} nicht gefunden."
+        exit 1
+    fi
+
+    # Domain abfragen
+    local dashboard_domain=""
+    while [[ -z "$dashboard_domain" ]]; do
+        read -p "Dashboard-Domain (z.B. dash.example.de): " dashboard_domain
+    done
+
+    # Authelia-Absicherung abfragen (nur wenn Authelia installiert)
+    local use_authelia="n"
+    if proxy_exec "test -f ${TRAEFIK_DIR}/conf.d/_authelia.yml" 2>/dev/null; then
+        echo ""
+        read -p "Dashboard mit Authelia absichern? (J/n): " use_authelia
+        use_authelia="${use_authelia:-j}"
+    fi
+
+    # Middleware bestimmen
+    local middlewares=""
+    if [[ "$use_authelia" == "j" || "$use_authelia" == "J" ]]; then
+        middlewares="authelia@file"
+    fi
+
+    # Zusammenfassung
+    echo ""
+    echo "Zusammenfassung:"
+    echo "  Dashboard:  https://$dashboard_domain"
+    if [[ -n "$middlewares" ]]; then
+        echo "  Authelia:   Ja (authelia@file)"
+    else
+        echo "  Authelia:   Nein"
+    fi
+    echo "  Verzeichnis: ${DASHBOARD_DIR}"
+    echo ""
+    echo "  DNS benötigt:"
+    echo "    - $dashboard_domain -> Proxy-Public-IP"
+    echo ""
+    read -p "Einrichtung starten? (j/n): " confirm
+    if [[ "$confirm" != "j" && "$confirm" != "J" ]]; then
+        echo "Abgebrochen."
+        exit 0
+    fi
+
+    echo ""
+    echo "Richte Dashboard auf Proxy ($PROXY_IP) ein..."
+
+    # .env Datei erstellen
+    echo "Erstelle .env..."
+    printf 'DASHBOARD_DOMAIN=%s\nDASHBOARD_MIDDLEWARES=%s\n' \
+        "$dashboard_domain" "$middlewares" \
+        | proxy_write "${DASHBOARD_DIR}/.env"
+
+    # Container bauen und starten
+    echo "Baue und starte Dashboard (das kann etwas dauern)..."
+    proxy_exec "cd ${DASHBOARD_DIR} && docker compose -f docker-compose.prod.yml up -d --build"
+
+    # Alte File-Provider-Route entfernen falls vorhanden
+    if proxy_exec "ls ${TRAEFIK_DIR}/conf.d/dash*.yml" &>/dev/null; then
+        echo "Entferne alte Traefik-File-Provider-Routen..."
+        proxy_exec "sudo rm -f ${TRAEFIK_DIR}/conf.d/dash*.yml"
+    fi
+
+    echo ""
+    print_success "Dashboard eingerichtet!"
+    echo ""
+    echo "  URL: https://$dashboard_domain"
+    echo ""
+    echo "  DNS-Eintrag nicht vergessen:"
+    echo "    $dashboard_domain -> Proxy-Public-IP"
+    echo ""
+    echo "  Status prüfen: vps dashboard status"
+    echo "  Logs anzeigen:  vps dashboard logs"
+}
+
+cmd_dashboard_status() {
+    echo "Dashboard-Status auf Proxy ($PROXY_IP):"
+    proxy_exec "cd ${DASHBOARD_DIR} && docker compose -f docker-compose.prod.yml ps" 2>/dev/null || print_error "Dashboard ist nicht installiert."
+}
+
+cmd_dashboard_logs() {
+    local lines="${1:-50}"
+    proxy_exec "cd ${DASHBOARD_DIR} && docker compose -f docker-compose.prod.yml logs --tail=${lines}"
+}
+
+cmd_dashboard_restart() {
+    echo "Starte Dashboard neu..."
+    proxy_exec "cd ${DASHBOARD_DIR} && docker compose -f docker-compose.prod.yml restart"
+    print_success "Dashboard neu gestartet."
+}
+
+cmd_dashboard_update() {
+    echo "Aktualisiere Dashboard (Rebuild)..."
+    proxy_exec "cd ${DASHBOARD_DIR} && docker compose -f docker-compose.prod.yml up -d --build"
+    print_success "Dashboard aktualisiert."
 }
 
 # === DEPLOY ===
@@ -4208,6 +4412,13 @@ Authelia (Proxy-Auth):
   authelia domain list              Cookie-Domains anzeigen
   authelia domain remove <domain>   Cookie-Domain entfernen
 
+Dashboard (Web-Oberfläche):
+  dashboard setup                   Richtet das Dashboard auf dem Proxy ein
+  dashboard status                  Zeigt Dashboard-Status
+  dashboard logs [lines]            Zeigt Dashboard-Logs
+  dashboard restart                 Startet Dashboard neu
+  dashboard update                  Dashboard neu bauen und starten
+
 Deployment:
   deploy <template> <host>          Deployed ein Template auf einen Host
   deploy list                       Zeigt verfügbare Templates
@@ -4253,6 +4464,8 @@ Beispiele:
   vps authelia user list                 # Benutzer anzeigen
   vps authelia domain add privat.de      # Weitere Domain hinzufügen
   vps authelia domain list               # Domains anzeigen
+  vps dashboard setup                    # Dashboard einrichten
+  vps dashboard status                   # Dashboard-Status anzeigen
   vps deploy list                   # Verfügbare Templates
   vps deploy uptime-kuma webserver  # App deployen
   vps deploy status webserver       # Deployments anzeigen
@@ -4315,6 +4528,9 @@ main() {
             ;;
         authelia)
             cmd_authelia "$@"
+            ;;
+        dashboard)
+            cmd_dashboard "$@"
             ;;
         netcup)
             cmd_netcup "$@"
