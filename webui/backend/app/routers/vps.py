@@ -85,7 +85,7 @@ async def get_vps_status(host: str, user: str = Depends(get_current_user)):
         "updates": "LC_ALL=C apt list --upgradable 2>/dev/null | grep -c upgradable; true",
         "reboot": "[ -f /var/run/reboot-required ] && echo ja || echo nein",
         "load": "uptime | awk -F'load average:' '{print $2}' | awk -F, '{print $1}' | tr -d ' '",
-        "uptime": "uptime -p 2>/dev/null || uptime | awk '{print $3, $4}'",
+        "uptime": "awk '{d=int($1/86400);h=int($1%86400/3600);m=int($1%3600/60);printf \"%dd:%dh:%dm\",d,h,m}' /proc/uptime",
         "kernel": "uname -r",
         "memory": "LC_ALL=C free -h | awk '/^Mem:/{print $3\"|\"$2}'",
         "disk": "LC_ALL=C df -h / | awk 'NR==2{print $3\"|\"$2}'",
