@@ -1,12 +1,15 @@
 import asyncio
+import os
+import shlex
+import uuid
 
-from fastapi import APIRouter, Depends, HTTPException
+from fastapi import APIRouter, Depends, HTTPException, UploadFile, File, Form
 
 from ..dependencies import get_current_user
 from ..models.vps import VPS, VPSStatus, ExecRequest
 from ..models.task import TaskCreate
 from ..services.hosts import parse_hosts_file, resolve_host
-from ..services.ssh import run_ssh, run_ssh_stream, check_host_online
+from ..services.ssh import run_ssh, run_ssh_stream, check_host_online, scp_upload
 from ..services.task_manager import task_manager
 
 router = APIRouter(prefix="/vps", tags=["VPS"])
@@ -171,3 +174,102 @@ async def exec_command(
 
     code, stdout, stderr = await run_ssh(ip, req.command, timeout=30)
     return {"exit_code": code, "stdout": stdout, "stderr": stderr}
+
+
+def _validate_remote_path(path: str) -> str:
+    """Validiert einen Remote-Pfad gegen Directory Traversal."""
+    if not path.startswith("/"):
+        raise HTTPException(status_code=400, detail="Pfad muss mit / beginnen")
+    if ".." in path.split("/"):
+        raise HTTPException(status_code=400, detail="Pfad darf kein .. enthalten")
+    return path
+
+
+@router.get("/{host}/files")
+async def list_files(
+    host: str, path: str = "/home/master", user: str = Depends(get_current_user)
+):
+    """Listet Verzeichnisinhalt eines VPS auf."""
+    ip = resolve_host(host)
+    if not ip:
+        raise HTTPException(status_code=404, detail=f"Host '{host}' nicht gefunden")
+
+    path = _validate_remote_path(path)
+
+    code, stdout, stderr = await run_ssh(
+        ip,
+        f"LC_ALL=C ls -lAp --time-style=long-iso {shlex.quote(path)}",
+        timeout=10,
+    )
+    if code != 0:
+        raise HTTPException(status_code=400, detail=stderr or "Verzeichnis nicht lesbar")
+
+    entries = []
+    for line in stdout.splitlines():
+        # Überspringe "total"-Zeile und leere Zeilen
+        if not line or line.startswith("total"):
+            continue
+        # Format: drwxr-xr-x 2 user group 4096 2024-01-15 10:30 dirname/
+        parts = line.split(None, 7)
+        if len(parts) < 8:
+            continue
+        name = parts[7]
+        is_dir = name.endswith("/")
+        if is_dir:
+            name = name.rstrip("/")
+        entries.append({
+            "name": name,
+            "type": "dir" if is_dir else "file",
+            "size": parts[4],
+            "modified": f"{parts[5]} {parts[6]}",
+        })
+
+    return {"path": path, "entries": entries}
+
+
+@router.post("/{host}/upload", response_model=TaskCreate)
+async def upload_file(
+    host: str,
+    destination: str = Form(...),
+    file: UploadFile = File(...),
+    user: str = Depends(get_current_user),
+):
+    """Lädt eine Datei per SCP auf einen VPS hoch."""
+    ip = resolve_host(host)
+    if not ip:
+        raise HTTPException(status_code=404, detail=f"Host '{host}' nicht gefunden")
+
+    destination = _validate_remote_path(destination)
+    filename = os.path.basename(file.filename or "upload")
+
+    # Temp-Datei speichern
+    tmp_path = f"/tmp/vps-upload-{uuid.uuid4()}"
+    with open(tmp_path, "wb") as f:
+        content = await file.read()
+        f.write(content)
+
+    remote_path = f"{destination.rstrip('/')}/{filename}"
+
+    async def do_upload(task_id: str):
+        try:
+            await task_manager.push_output(
+                task_id, f"Lade {filename} hoch nach {remote_path}..."
+            )
+            rc, err = await scp_upload(ip, tmp_path, remote_path)
+            if rc == 0:
+                await task_manager.push_output(
+                    task_id, f"Upload erfolgreich: {remote_path}"
+                )
+            else:
+                raise RuntimeError(f"SCP fehlgeschlagen: {err}")
+        finally:
+            if os.path.exists(tmp_path):
+                os.remove(tmp_path)
+
+    task_id = task_manager.create_task(
+        "upload",
+        f"Upload {filename} → {host}:{remote_path}",
+        host=host,
+        coro_factory=do_upload,
+    )
+    return TaskCreate(task_id=task_id)

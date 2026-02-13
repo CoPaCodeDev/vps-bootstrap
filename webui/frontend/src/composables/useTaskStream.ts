@@ -9,19 +9,15 @@ export function useTaskStream() {
   const running = ref(false)
   const taskStatus = ref<string>('')
 
-  async function startTask(endpoint: string, body?: unknown) {
+  function trackTask(id: string) {
     running.value = true
     output.value = []
     taskStatus.value = ''
+    taskId.value = id
 
-    const result = await post<{ task_id: string }>(endpoint, body)
-    taskId.value = result.task_id
-
-    // WebSocket verbinden
-    const ws = useWebSocket(`/api/v1/tasks/ws/${result.task_id}`)
+    const ws = useWebSocket(`/api/v1/tasks/ws/${id}`)
     ws.connect()
 
-    // Output weiterleiten
     const interval = setInterval(() => {
       if (ws.messages.value.length > output.value.length) {
         output.value = [...ws.messages.value]
@@ -32,9 +28,13 @@ export function useTaskStream() {
         clearInterval(interval)
       }
     }, 100)
+  }
 
+  async function startTask(endpoint: string, body?: unknown) {
+    const result = await post<{ task_id: string }>(endpoint, body)
+    trackTask(result.task_id)
     return result.task_id
   }
 
-  return { taskId, output, running, taskStatus, startTask }
+  return { taskId, output, running, taskStatus, startTask, trackTask }
 }

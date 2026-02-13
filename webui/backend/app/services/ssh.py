@@ -80,6 +80,50 @@ async def run_ssh_stream(
     await proc.wait()
 
 
+async def scp_upload(
+    host: str,
+    local_path: str,
+    remote_path: str,
+    timeout: int | None = None,
+) -> tuple[int, str]:
+    """Lädt eine lokale Datei per SCP auf einen Host hoch.
+
+    Gibt (exit_code, stderr) zurück.
+    """
+    effective_timeout = timeout or 120
+    target = settings.proxy_host if host in ("proxy", "localhost") else host
+
+    scp_cmd = (
+        f"scp -o StrictHostKeyChecking=no -o UserKnownHostsFile=/dev/null -o LogLevel=ERROR "
+        f"-o ConnectTimeout={settings.ssh_timeout} "
+        f"-o BatchMode=yes -i {settings.ssh_key_path} "
+        f"{shlex.quote(local_path)} "
+        f"{settings.ssh_user}@{target}:{shlex.quote(remote_path)}"
+    )
+    proc = await asyncio.create_subprocess_shell(
+        scp_cmd,
+        stdout=asyncio.subprocess.PIPE,
+        stderr=asyncio.subprocess.PIPE,
+    )
+
+    try:
+        _, stderr = await asyncio.wait_for(
+            proc.communicate(), timeout=effective_timeout
+        )
+    except asyncio.TimeoutError:
+        proc.kill()
+        logger.warning("SCP timeout: %s", host)
+        return -1, "Timeout"
+
+    rc = proc.returncode or 0
+    err = stderr.decode("utf-8", errors="replace").strip()
+
+    if rc != 0:
+        logger.warning("SCP failed (host=%s, rc=%d): %s", host, rc, err)
+
+    return rc, err
+
+
 async def check_host_online(host: str) -> bool:
     """Prüft ob ein Host per SSH erreichbar ist."""
     code, _, _ = await run_ssh(host, "echo ok", timeout=5)
