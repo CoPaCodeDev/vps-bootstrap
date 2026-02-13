@@ -10,6 +10,8 @@ import WebTerminal from '@/components/shared/WebTerminal.vue'
 import ConfirmDialog from '@/components/shared/ConfirmDialog.vue'
 import Card from 'primevue/card'
 import Button from 'primevue/button'
+import DataTable from 'primevue/datatable'
+import Column from 'primevue/column'
 import { useToast } from 'primevue/usetoast'
 
 const route = useRoute()
@@ -32,6 +34,22 @@ const browseLoading = ref(false)
 const selectedFiles = ref<File[]>([])
 const uploading = ref(false)
 const fileInput = ref<HTMLInputElement | null>(null)
+const viewMode = ref<'grid' | 'list'>('grid')
+const browseHistory = ref<string[]>([])
+const historyIndex = ref(-1)
+
+const folderCount = computed(() => browseEntries.value.filter(e => e.type === 'dir').length)
+const fileCount = computed(() => browseEntries.value.filter(e => e.type === 'file').length)
+
+function fileIcon(name: string): string {
+  const ext = name.includes('.') ? name.slice(name.lastIndexOf('.')).toLowerCase() : ''
+  if (['.jpg', '.jpeg', '.png', '.gif', '.svg', '.webp', '.bmp'].includes(ext)) return 'pi-image'
+  if (['.zip', '.tar', '.gz', '.bz2', '.xz', '.7z', '.rar'].includes(ext)) return 'pi-box'
+  if (['.sh', '.py', '.js', '.ts', '.go', '.rs', '.c', '.cpp', '.java'].includes(ext)) return 'pi-code'
+  if (['.txt', '.md', '.log', '.conf', '.cfg', '.ini', '.yaml', '.yml', '.toml', '.json'].includes(ext)) return 'pi-file-edit'
+  if (ext === '.pdf') return 'pi-file-pdf'
+  return 'pi-file'
+}
 
 const breadcrumbs = computed(() => {
   const parts = browsePath.value.split('/').filter(Boolean)
@@ -44,7 +62,7 @@ const breadcrumbs = computed(() => {
   return crumbs
 })
 
-async function loadDirectory(path: string) {
+async function loadDirectory(path: string, addToHistory = true) {
   browseLoading.value = true
   try {
     const data = await get<{ path: string; entries: typeof browseEntries.value }>(
@@ -52,6 +70,12 @@ async function loadDirectory(path: string) {
     )
     browsePath.value = data.path
     browseEntries.value = data.entries
+    if (addToHistory) {
+      // Truncate forward history when navigating to a new path
+      browseHistory.value = browseHistory.value.slice(0, historyIndex.value + 1)
+      browseHistory.value.push(data.path)
+      historyIndex.value = browseHistory.value.length - 1
+    }
   } catch {
     toast.add({ severity: 'error', summary: 'Fehler', detail: 'Verzeichnis nicht lesbar', life: 3000 })
   } finally {
@@ -66,6 +90,19 @@ function navigateTo(path: string) {
 function enterDirectory(name: string) {
   const newPath = browsePath.value === '/' ? `/${name}` : `${browsePath.value}/${name}`
   loadDirectory(newPath)
+}
+
+function goBack() {
+  if (historyIndex.value > 0) {
+    historyIndex.value--
+    loadDirectory(browseHistory.value[historyIndex.value], false)
+  }
+}
+
+function goUp() {
+  if (browsePath.value === '/') return
+  const parent = browsePath.value.substring(0, browsePath.value.lastIndexOf('/')) || '/'
+  loadDirectory(parent)
 }
 
 function onFileDrop(event: DragEvent) {
@@ -258,36 +295,125 @@ async function doReboot() {
       <template #title>Datei hochladen</template>
       <template #content>
         <div class="upload-layout">
-          <!-- Links: Remote-Dateibrowser -->
+          <!-- Links: Remote-Dateibrowser (Explorer-Stil) -->
           <div class="file-browser">
-            <div class="breadcrumb">
-              <span
-                v-for="(crumb, i) in breadcrumbs"
-                :key="crumb.path"
-                class="crumb"
-                @click="navigateTo(crumb.path)"
-              >
-                <span v-if="i > 0" class="crumb-sep">/</span>
-                {{ crumb.label }}
-              </span>
+            <!-- Explorer-Toolbar -->
+            <div class="explorer-toolbar">
+              <div class="explorer-nav">
+                <Button
+                  icon="pi pi-arrow-left"
+                  text
+                  rounded
+                  size="small"
+                  :disabled="historyIndex <= 0"
+                  @click="goBack"
+                  v-tooltip.bottom="'Zurück'"
+                />
+                <Button
+                  icon="pi pi-arrow-up"
+                  text
+                  rounded
+                  size="small"
+                  :disabled="browsePath === '/'"
+                  @click="goUp"
+                  v-tooltip.bottom="'Übergeordneter Ordner'"
+                />
+              </div>
+              <div class="explorer-breadcrumb">
+                <span
+                  v-for="(crumb, i) in breadcrumbs"
+                  :key="crumb.path"
+                  class="crumb"
+                  @click="navigateTo(crumb.path)"
+                >
+                  <span v-if="i > 0" class="crumb-sep"><i class="pi pi-chevron-right"></i></span>
+                  {{ crumb.label }}
+                </span>
+              </div>
+              <div class="explorer-view-toggle">
+                <Button
+                  icon="pi pi-th-large"
+                  text
+                  rounded
+                  size="small"
+                  :severity="viewMode === 'grid' ? 'primary' : 'secondary'"
+                  :class="{ 'view-active': viewMode === 'grid' }"
+                  @click="viewMode = 'grid'"
+                  v-tooltip.bottom="'Rasteransicht'"
+                />
+                <Button
+                  icon="pi pi-list"
+                  text
+                  rounded
+                  size="small"
+                  :severity="viewMode === 'list' ? 'primary' : 'secondary'"
+                  :class="{ 'view-active': viewMode === 'list' }"
+                  @click="viewMode = 'list'"
+                  v-tooltip.bottom="'Listenansicht'"
+                />
+              </div>
             </div>
+
+            <!-- Loading -->
             <div v-if="browseLoading" class="browse-loading">
               <i class="pi pi-spin pi-spinner"></i> Lade...
             </div>
-            <div v-else class="file-list">
+
+            <!-- Grid-Ansicht -->
+            <div v-else-if="viewMode === 'grid'" class="explorer-grid">
               <div
                 v-for="entry in browseEntries"
                 :key="entry.name"
-                class="file-entry"
+                class="explorer-grid-item"
                 :class="{ 'is-dir': entry.type === 'dir' }"
-                @click="entry.type === 'dir' && enterDirectory(entry.name)"
+                @dblclick="entry.type === 'dir' && enterDirectory(entry.name)"
               >
-                <i :class="entry.type === 'dir' ? 'pi pi-folder' : 'pi pi-file'" class="file-icon"></i>
-                <span class="file-name">{{ entry.name }}</span>
-                <span class="file-size">{{ entry.type === 'file' ? entry.size : '' }}</span>
-                <span class="file-modified">{{ entry.modified }}</span>
+                <i
+                  :class="entry.type === 'dir' ? 'pi pi-folder' : `pi ${fileIcon(entry.name)}`"
+                  class="grid-icon"
+                  :style="entry.type === 'dir' ? 'color: #e8a838' : ''"
+                ></i>
+                <span class="grid-label">{{ entry.name }}</span>
               </div>
               <div v-if="browseEntries.length === 0" class="empty-dir">Verzeichnis ist leer</div>
+            </div>
+
+            <!-- Listen-Ansicht -->
+            <div v-else class="explorer-list">
+              <DataTable
+                :value="browseEntries"
+                size="small"
+                stripedRows
+                scrollable
+                scrollHeight="400px"
+                @row-dblclick="(e: any) => e.data.type === 'dir' && enterDirectory(e.data.name)"
+                class="explorer-table"
+              >
+                <Column field="name" header="Name" sortable style="min-width: 200px">
+                  <template #body="{ data }">
+                    <div class="list-name-cell">
+                      <i
+                        :class="data.type === 'dir' ? 'pi pi-folder' : `pi ${fileIcon(data.name)}`"
+                        class="list-icon"
+                        :style="data.type === 'dir' ? 'color: #e8a838' : ''"
+                      ></i>
+                      <span :class="{ 'dir-name': data.type === 'dir' }">{{ data.name }}</span>
+                    </div>
+                  </template>
+                </Column>
+                <Column field="size" header="Größe" sortable style="width: 100px">
+                  <template #body="{ data }">
+                    {{ data.type === 'file' ? data.size : '' }}
+                  </template>
+                </Column>
+                <Column field="modified" header="Geändert" sortable style="width: 160px" />
+              </DataTable>
+              <div v-if="browseEntries.length === 0" class="empty-dir">Verzeichnis ist leer</div>
+            </div>
+
+            <!-- Statusleiste -->
+            <div class="explorer-statusbar">
+              {{ folderCount }} Ordner, {{ fileCount }} Dateien
             </div>
           </div>
           <!-- Rechts: Upload-Zone -->
@@ -452,21 +578,40 @@ async function doReboot() {
   gap: 1.5rem;
 }
 
-/* Dateibrowser */
-.breadcrumb {
+/* Explorer-Toolbar */
+.explorer-toolbar {
   display: flex;
-  flex-wrap: wrap;
-  gap: 0.15rem;
-  padding: 0.5rem 0.75rem;
+  align-items: center;
+  gap: 0.5rem;
+  padding: 0.35rem 0.5rem;
   background: var(--p-surface-100);
   border-radius: var(--p-border-radius);
   margin-bottom: 0.75rem;
+}
+
+.explorer-nav {
+  display: flex;
+  gap: 0.1rem;
+  flex-shrink: 0;
+}
+
+.explorer-breadcrumb {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: 0.1rem;
+  flex: 1;
+  min-width: 0;
   font-size: 0.85rem;
+  padding: 0 0.25rem;
 }
 
 .crumb {
   cursor: pointer;
   color: var(--p-primary-color);
+  display: inline-flex;
+  align-items: center;
+  gap: 0.1rem;
 }
 
 .crumb:hover {
@@ -475,70 +620,120 @@ async function doReboot() {
 
 .crumb-sep {
   color: var(--p-text-muted-color);
-  margin: 0 0.15rem;
+  font-size: 0.65rem;
+  margin: 0 0.1rem;
 }
 
+.explorer-view-toggle {
+  display: flex;
+  gap: 0.1rem;
+  flex-shrink: 0;
+}
+
+.view-active {
+  background: var(--p-surface-200) !important;
+}
+
+/* Loading */
 .browse-loading {
   padding: 2rem;
   text-align: center;
   color: var(--p-text-muted-color);
 }
 
-.file-list {
+/* Grid-Ansicht */
+.explorer-grid {
+  display: grid;
+  grid-template-columns: repeat(auto-fill, minmax(90px, 1fr));
+  gap: 0.25rem;
   max-height: 400px;
   overflow-y: auto;
   border: 1px solid var(--p-surface-200);
   border-radius: var(--p-border-radius);
+  padding: 0.5rem;
 }
 
-.file-entry {
-  display: grid;
-  grid-template-columns: auto 1fr auto auto;
-  gap: 0.5rem;
+.explorer-grid-item {
+  display: flex;
+  flex-direction: column;
   align-items: center;
-  padding: 0.4rem 0.75rem;
-  border-bottom: 1px solid var(--p-surface-100);
-  font-size: 0.85rem;
+  text-align: center;
+  padding: 0.75rem 0.5rem;
+  border-radius: 6px;
+  cursor: default;
+  user-select: none;
+  transition: background 0.15s;
 }
 
-.file-entry:last-child {
-  border-bottom: none;
-}
-
-.file-entry.is-dir {
+.explorer-grid-item.is-dir {
   cursor: pointer;
 }
 
-.file-entry.is-dir:hover {
-  background: var(--p-surface-50);
+.explorer-grid-item:hover {
+  background: var(--p-surface-100);
 }
 
-.file-icon {
-  font-size: 0.9rem;
+.grid-icon {
+  font-size: 2.5rem;
+  margin-bottom: 0.35rem;
   color: var(--p-text-muted-color);
 }
 
-.file-entry.is-dir .file-icon {
-  color: var(--p-primary-color);
-}
-
-.file-name {
+.grid-label {
+  font-size: 0.75rem;
+  line-height: 1.2;
+  max-width: 100%;
   overflow: hidden;
   text-overflow: ellipsis;
-  white-space: nowrap;
+  display: -webkit-box;
+  -webkit-line-clamp: 2;
+  -webkit-box-orient: vertical;
+  word-break: break-all;
 }
 
-.file-size,
-.file-modified {
+/* Listen-Ansicht */
+.explorer-list {
+  border: 1px solid var(--p-surface-200);
+  border-radius: var(--p-border-radius);
+  overflow: hidden;
+}
+
+.explorer-table :deep(.p-datatable-row-action) {
+  cursor: pointer;
+}
+
+.list-name-cell {
+  display: flex;
+  align-items: center;
+  gap: 0.5rem;
+}
+
+.list-icon {
+  font-size: 1.1rem;
+  flex-shrink: 0;
   color: var(--p-text-muted-color);
+}
+
+.dir-name {
+  font-weight: 500;
+}
+
+/* Statusleiste */
+.explorer-statusbar {
+  display: flex;
+  align-items: center;
+  padding: 0.35rem 0.75rem;
   font-size: 0.8rem;
-  white-space: nowrap;
+  color: var(--p-text-muted-color);
+  border-top: 1px solid var(--p-surface-100);
+  margin-top: 0.5rem;
 }
 
 .empty-dir {
   padding: 2rem;
   text-align: center;
   color: var(--p-text-muted-color);
+  grid-column: 1 / -1;
 }
 
 /* Upload-Zone */
