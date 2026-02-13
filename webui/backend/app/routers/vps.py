@@ -87,8 +87,8 @@ async def get_vps_status(host: str, user: str = Depends(get_current_user)):
         "load": "uptime | awk -F'load average:' '{print $2}' | awk -F, '{print $1}' | tr -d ' '",
         "uptime": "uptime -p 2>/dev/null || uptime | awk '{print $3, $4}'",
         "kernel": "uname -r",
-        "memory": "free -h | awk '/^Mem:/{print $3\"|\"$2}'",
-        "disk": "df -h / | awk 'NR==2{print $3\"|\"$2}'",
+        "memory": "LC_ALL=C free -h | awk '/^Mem:/{print $3\"|\"$2}'",
+        "disk": "LC_ALL=C df -h / | awk 'NR==2{print $3\"|\"$2}'",
     }
 
     results = {}
