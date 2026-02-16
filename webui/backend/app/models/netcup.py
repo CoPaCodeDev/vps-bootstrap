@@ -28,4 +28,5 @@ class Server(BaseModel):
 class InstallRequest(BaseModel):
     hostname: str
     image: str
-    ssh_keys: list[str] = []
+    password: str
+    setup_vlan: bool = True

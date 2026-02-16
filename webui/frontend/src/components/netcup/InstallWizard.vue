@@ -1,9 +1,12 @@
 <script setup lang="ts">
-import { ref, watch } from 'vue'
+import { ref, computed, watch } from 'vue'
 import Dialog from 'primevue/dialog'
 import InputText from 'primevue/inputtext'
+import Password from 'primevue/password'
 import Select from 'primevue/select'
+import Checkbox from 'primevue/checkbox'
 import Button from 'primevue/button'
+import Message from 'primevue/message'
 import { useApi } from '@/composables/useApi'
 import { useTaskStream } from '@/composables/useTaskStream'
 import LiveTerminal from '@/components/shared/LiveTerminal.vue'
@@ -24,13 +27,43 @@ const toast = useToast()
 const task = useTaskStream()
 
 const hostname = ref('')
+const password = ref('')
+const passwordConfirm = ref('')
+const setupVlan = ref(true)
 const images = ref<any[]>([])
 const selectedImage = ref<any>(null)
 const loadingImages = ref(false)
 
+const passwordErrors = computed(() => {
+  const errors: string[] = []
+  if (!password.value) return errors
+  if (password.value.length < 8) errors.push('Min. 8 Zeichen')
+  if (!/[A-Z]/.test(password.value)) errors.push('Großbuchstabe fehlt')
+  if (!/[a-z]/.test(password.value)) errors.push('Kleinbuchstabe fehlt')
+  if (!/[0-9]/.test(password.value)) errors.push('Zahl fehlt')
+  return errors
+})
+
+const passwordMismatch = computed(() => {
+  return passwordConfirm.value !== '' && password.value !== passwordConfirm.value
+})
+
+const formValid = computed(() => {
+  return (
+    hostname.value.trim() !== '' &&
+    selectedImage.value !== null &&
+    password.value !== '' &&
+    passwordErrors.value.length === 0 &&
+    password.value === passwordConfirm.value
+  )
+})
+
 watch(() => props.visible, async (open) => {
   if (!open) return
   hostname.value = props.initialHostname || ''
+  password.value = ''
+  passwordConfirm.value = ''
+  setupVlan.value = true
   selectedImage.value = null
   images.value = []
   loadingImages.value = true
@@ -54,11 +87,13 @@ watch(() => props.visible, async (open) => {
 })
 
 async function startInstall() {
-  if (!hostname.value || !selectedImage.value) return
+  if (!formValid.value) return
   try {
     await task.startTask(`/netcup/servers/${props.serverId}/install`, {
       hostname: hostname.value,
       image: selectedImage.value.image?.name || selectedImage.value.name,
+      password: password.value,
+      setup_vlan: setupVlan.value,
     })
     toast.add({ severity: 'info', summary: 'Installation gestartet', life: 3000 })
   } catch (e: any) {
@@ -76,14 +111,15 @@ async function startInstall() {
     :style="{ width: '40rem' }"
   >
     <div v-if="task.output.value.length === 0" class="form">
+      <Message severity="warn" :closable="false">
+        Alle Daten auf diesem Server werden gelöscht!
+      </Message>
+
       <div class="field">
         <label>Server-ID</label>
         <code>{{ serverId }}</code>
       </div>
-      <div class="field">
-        <label>Hostname</label>
-        <InputText v-model="hostname" placeholder="mein-vps" class="w-full" />
-      </div>
+
       <div class="field">
         <label>Image</label>
         <Select
@@ -94,6 +130,46 @@ async function startInstall() {
           :loading="loadingImages"
           class="w-full"
         />
+      </div>
+
+      <div class="field">
+        <label>Hostname</label>
+        <InputText v-model="hostname" placeholder="mein-vps" class="w-full" />
+      </div>
+
+      <div class="field">
+        <label>Passwort</label>
+        <Password
+          v-model="password"
+          placeholder="Passwort für User 'master'"
+          :feedback="false"
+          toggleMask
+          class="w-full"
+          inputClass="w-full"
+        />
+        <small v-if="passwordErrors.length > 0" class="p-error">
+          {{ passwordErrors.join(', ') }}
+        </small>
+      </div>
+
+      <div class="field">
+        <label>Passwort bestätigen</label>
+        <Password
+          v-model="passwordConfirm"
+          placeholder="Passwort wiederholen"
+          :feedback="false"
+          toggleMask
+          class="w-full"
+          inputClass="w-full"
+        />
+        <small v-if="passwordMismatch" class="p-error">
+          Passwörter stimmen nicht überein
+        </small>
+      </div>
+
+      <div class="field-checkbox">
+        <Checkbox v-model="setupVlan" :binary="true" inputId="setupVlan" />
+        <label for="setupVlan">CloudVLAN einrichten</label>
       </div>
     </div>
 
@@ -111,7 +187,7 @@ async function startInstall() {
         icon="pi pi-download"
         severity="warn"
         @click="startInstall"
-        :disabled="!hostname || !selectedImage"
+        :disabled="!formValid"
       />
     </template>
   </Dialog>
@@ -135,7 +211,22 @@ async function startInstall() {
   font-weight: 500;
 }
 
+.field-checkbox {
+  display: flex;
+  align-items: center;
+  gap: 0.5rem;
+}
+
+.field-checkbox label {
+  font-size: 0.875rem;
+  font-weight: 500;
+}
+
 .w-full {
   width: 100%;
+}
+
+.p-error {
+  color: var(--p-red-500);
 }
 </style>

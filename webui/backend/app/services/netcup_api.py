@@ -1,12 +1,17 @@
 import asyncio
+import base64
 import json
+import logging
 import os
 import time
 import uuid
+from typing import Callable, Awaitable
 
 import httpx
 
 from ..config import settings
+
+logger = logging.getLogger(__name__)
 
 
 class NetcupAPI:
@@ -175,7 +180,8 @@ class NetcupAPI:
         headers = {"Authorization": f"Bearer {token}"}
         if "headers_extra" in kwargs:
             headers.update(kwargs.pop("headers_extra"))
-        async with httpx.AsyncClient() as client:
+        req_timeout = kwargs.pop("timeout", 30)
+        async with httpx.AsyncClient(timeout=req_timeout) as client:
             resp = await client.request(
                 method,
                 url,
@@ -220,16 +226,164 @@ class NetcupAPI:
         resp = await self._api_request("GET", f"/api/v1/servers/{server_id}/imageflavours")
         return resp.json()
 
-    async def install_server(self, server_id: str, image_id: str, hostname: str, ssh_keys: list[int] | None = None) -> dict:
-        body = {
-            "imageFlavourId": image_id,
-            "hostname": hostname,
-        }
-        if ssh_keys:
-            body["sshKeyIds"] = ssh_keys
-
-        resp = await self._api_request("POST", f"/api/v1/servers/{server_id}/install", json=body)
+    async def get_disks(self, server_id: str) -> list[dict]:
+        """Disks eines Servers abrufen."""
+        resp = await self._api_request("GET", f"/api/v1/servers/{server_id}/disks")
         return resp.json()
+
+    async def install_image(self, server_id: str, body: dict) -> dict:
+        """Image auf Server installieren (vollständiger Endpoint).
+
+        Body enthält: imageFlavourId, diskName, hostname, password,
+        sshKeyIds, customScript, locale, timezone etc.
+        """
+        resp = await self._api_request(
+            "POST",
+            f"/api/v1/servers/{server_id}/image",
+            json=body,
+            timeout=60,
+        )
+        return resp.json()
+
+    async def get_tasks(self) -> list[dict]:
+        """Alle Tasks des Users abrufen."""
+        resp = await self._api_request("GET", "/api/v1/tasks")
+        return resp.json()
+
+    async def get_task(self, task_uuid: str) -> dict:
+        """Einzelnen Task abrufen."""
+        resp = await self._api_request("GET", f"/api/v1/tasks/{task_uuid}")
+        return resp.json()
+
+    async def get_ssh_keys(self, user_id: int) -> list[dict]:
+        """SSH-Keys eines Users abrufen."""
+        resp = await self._api_request("GET", f"/api/v1/users/{user_id}/ssh-keys")
+        return resp.json()
+
+    async def upload_ssh_key(self, user_id: int, name: str, key: str) -> dict:
+        """SSH-Key für einen User hochladen."""
+        resp = await self._api_request(
+            "POST",
+            f"/api/v1/users/{user_id}/ssh-keys",
+            json={"name": name, "key": key},
+        )
+        return resp.json()
+
+    async def create_vlan_interface(self, server_id: str, vlan_id: int) -> dict:
+        """VLAN-Interface für einen Server anlegen."""
+        resp = await self._api_request(
+            "POST",
+            f"/api/v1/servers/{server_id}/interfaces",
+            json={"vlanId": vlan_id, "networkDriver": "VIRTIO"},
+        )
+        return resp.json()
+
+    async def set_hostname(self, server_id: str, hostname: str) -> dict:
+        """Hostname eines Servers setzen."""
+        resp = await self._api_request(
+            "PATCH",
+            f"/api/v1/servers/{server_id}",
+            json={"hostname": hostname},
+            headers_extra={"Content-Type": "application/merge-patch+json"},
+        )
+        return resp.json()
+
+    async def set_nickname(self, server_id: str, nickname: str) -> dict:
+        """Nickname eines Servers setzen."""
+        resp = await self._api_request(
+            "PATCH",
+            f"/api/v1/servers/{server_id}",
+            json={"nickname": nickname},
+            headers_extra={"Content-Type": "application/merge-patch+json"},
+        )
+        return resp.json()
+
+    async def get_user_id(self) -> int:
+        """User-ID aus Tasks-API oder JWT extrahieren."""
+        # 1. Tasks-API: executingUser.id
+        try:
+            tasks = await self.get_tasks()
+            for task in tasks:
+                uid = (task.get("executingUser") or {}).get("id")
+                if uid and isinstance(uid, int) and uid > 0:
+                    return uid
+        except Exception:
+            pass
+
+        # 2. JWT-Claims
+        tokens = self._load_tokens()
+        if tokens and tokens.get("access_token"):
+            try:
+                payload = tokens["access_token"].split(".")[1]
+                # Base64-Padding
+                payload += "=" * (4 - len(payload) % 4)
+                decoded = json.loads(base64.b64decode(payload))
+                for claim in ("userId", "user_id", "uid", "scp_user_id"):
+                    val = decoded.get(claim)
+                    if val and str(val).isdigit():
+                        return int(val)
+            except Exception:
+                pass
+
+        raise Exception("Konnte User-ID nicht ermitteln")
+
+    async def get_vlan_id(self) -> int:
+        """VLAN-ID aus bestehenden Server-Interfaces ermitteln."""
+        servers = await self.list_servers()
+        for server in servers:
+            try:
+                info = await self.get_server(str(server["id"]))
+                interfaces = (info.get("serverLiveInfo") or {}).get("interfaces", [])
+                for iface in interfaces:
+                    if iface.get("vlanInterface"):
+                        vlan_id = iface.get("vlanId")
+                        if vlan_id and int(vlan_id) > 0:
+                            return int(vlan_id)
+            except Exception:
+                continue
+        raise Exception("Kein CloudVLAN gefunden. Kein bestehender Server hat ein VLAN-Interface.")
+
+    async def poll_netcup_task(
+        self,
+        task_uuid: str,
+        task_name: str,
+        callback: Callable[[str], Awaitable[None]] | None = None,
+        max_polls: int = 360,
+    ) -> bool:
+        """Pollt einen Netcup-Task bis fertig. Gibt True bei Erfolg zurück."""
+        for poll in range(1, max_polls + 1):
+            await asyncio.sleep(5)
+            try:
+                task = await self.get_task(task_uuid)
+            except Exception as e:
+                logger.warning("Task-Poll fehlgeschlagen: %s", e)
+                continue
+
+            state = task.get("state", "UNKNOWN")
+            progress = task.get("taskProgress", {}).get("progressInPercent", 0)
+            progress = int(float(progress))
+
+            msg = f"  {task_name}... {progress}% ({state})"
+            if callback:
+                await callback(msg)
+
+            if state == "FINISHED":
+                if callback:
+                    await callback(f"  {task_name}... 100% (FINISHED)")
+                return True
+            if state in ("ERROR", "CANCELED", "ROLLBACK"):
+                error_msg = (
+                    task.get("responseError", {}).get("message")
+                    or task.get("message")
+                    or "Unbekannter Fehler"
+                )
+                if callback:
+                    await callback(f"FEHLER: {task_name} fehlgeschlagen: {error_msg}")
+                return False
+
+        if callback:
+            await callback(f"FEHLER: {task_name}: Zeitüberschreitung nach 30 Minuten")
+        return False
 
 
 # Globale Instanz
