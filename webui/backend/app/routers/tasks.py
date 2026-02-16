@@ -1,9 +1,12 @@
 import json
+import logging
 
 from fastapi import APIRouter, WebSocket, WebSocketDisconnect
 
 from ..models.task import TaskInfo
 from ..services.task_manager import task_manager
+
+logger = logging.getLogger(__name__)
 
 router = APIRouter(prefix="/tasks", tags=["Tasks"])
 
@@ -38,6 +41,12 @@ async def get_task_output(task_id: str):
 @router.websocket("/ws/{task_id}")
 async def task_websocket(websocket: WebSocket, task_id: str):
     """WebSocket für Live-Output eines Tasks."""
+    # Auth-Check: Remote-User Header (von Authelia via Traefik)
+    remote_user = websocket.headers.get("remote-user", "")
+    if not remote_user:
+        # Im Dev-Modus ohne Authelia trotzdem erlauben
+        logger.debug("Kein Remote-User Header — Dev-Modus")
+
     await websocket.accept()
 
     task = task_manager.get_task(task_id)

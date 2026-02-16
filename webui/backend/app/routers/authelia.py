@@ -1,5 +1,6 @@
 import os
 import re
+import shlex
 
 import yaml
 from fastapi import APIRouter, Depends, HTTPException
@@ -68,7 +69,7 @@ async def add_user(req: AutheliaUserCreate, user: str = Depends(get_current_user
     # Passwort-Hash generieren
     code, hash_out, stderr = await run_ssh(
         "proxy",
-        f"sudo docker exec authelia authelia crypto hash generate argon2 --password '{req.password}'",
+        f"sudo docker exec authelia authelia crypto hash generate argon2 --password {shlex.quote(req.password)}",
         timeout=15,
     )
     if code != 0:

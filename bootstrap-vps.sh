@@ -37,12 +37,13 @@ echo ""
 usermod -aG sudo master
 echo "master ALL=(ALL) NOPASSWD:ALL" > /etc/sudoers.d/master
 chmod 440 /etc/sudoers.d/master
-echo "[1/5] User master konfiguriert"
+echo "[1/6] User master konfiguriert"
 
-# SSH Root-Login deaktivieren
+# SSH härten: Root-Login und Passwort-Authentifizierung deaktivieren
 sed -i 's/^#*PermitRootLogin.*/PermitRootLogin no/' /etc/ssh/sshd_config
+sed -i 's/^#*PasswordAuthentication.*/PasswordAuthentication no/' /etc/ssh/sshd_config
 systemctl restart sshd
-echo "[2/5] SSH Root-Login deaktiviert"
+echo "[2/6] SSH gehärtet (Root-Login + Passwort deaktiviert)"
 
 # Hostname setzen
 hostnamectl set-hostname "$HOSTNAME"
@@ -50,7 +51,7 @@ echo "$HOSTNAME" > /etc/hostname
 sed -i "/127.0.1.1/d" /etc/hosts
 echo "127.0.1.1    $HOSTNAME" >> /etc/hosts
 echo "${CLOUDVLAN_IP}    ${HOSTNAME}-vlan" >> /etc/hosts
-echo "[3/5] Hostname gesetzt: $HOSTNAME"
+echo "[3/6] Hostname gesetzt: $HOSTNAME"
 
 # CloudVLAN Interface finden
 CLOUDVLAN_INTERFACE=""
@@ -69,7 +70,7 @@ iface ${CLOUDVLAN_INTERFACE} inet static
 EOF
 
 ifup "$CLOUDVLAN_INTERFACE" 2>/dev/null
-echo "[4/5] CloudVLAN konfiguriert: $CLOUDVLAN_INTERFACE -> $CLOUDVLAN_IP"
+echo "[4/6] CloudVLAN konfiguriert: $CLOUDVLAN_INTERFACE -> $CLOUDVLAN_IP"
 
 # UFW Firewall installieren und konfigurieren
 apt-get update -qq
@@ -84,7 +85,18 @@ ufw allow from 10.10.0.0/24
 
 # UFW aktivieren
 ufw --force enable
-echo "[5/5] Firewall aktiviert"
+echo "[5/6] Firewall aktiviert"
+
+# Automatische Sicherheits-Updates
+apt-get install -y -qq unattended-upgrades
+cat > /etc/apt/apt.conf.d/50unattended-upgrades << 'UUEOF'
+Unattended-Upgrade::Allowed-Origins {
+    "${distro_id}:${distro_codename}-security";
+};
+Unattended-Upgrade::Automatic-Reboot "false";
+UUEOF
+systemctl enable unattended-upgrades
+echo "[6/6] Automatische Sicherheits-Updates aktiviert"
 
 # Proxy SSH-Key installieren (ermöglicht Zugriff vom Proxy)
 mkdir -p /home/master/.ssh
