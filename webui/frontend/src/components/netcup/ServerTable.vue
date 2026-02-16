@@ -77,6 +77,7 @@ async function serverAction(serverId: string, action: string) {
             severity="success"
             @click="serverAction(data.id, 'start')"
             :loading="actionLoading[`${data.id}-start`]"
+            :disabled="data.serverLiveInfo?.state === 'RUNNING'"
             title="Starten"
           />
           <Button
@@ -86,6 +87,7 @@ async function serverAction(serverId: string, action: string) {
             severity="danger"
             @click="serverAction(data.id, 'stop')"
             :loading="actionLoading[`${data.id}-stop`]"
+            :disabled="data.serverLiveInfo?.state !== 'RUNNING'"
             title="Stoppen"
           />
           <Button
@@ -95,6 +97,7 @@ async function serverAction(serverId: string, action: string) {
             severity="warn"
             @click="serverAction(data.id, 'restart')"
             :loading="actionLoading[`${data.id}-restart`]"
+            :disabled="data.serverLiveInfo?.state !== 'RUNNING'"
             title="Neustarten"
           />
           <Button
