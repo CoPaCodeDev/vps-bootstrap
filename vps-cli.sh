@@ -199,6 +199,7 @@ cmd_scan() {
         echo "# IP          Hostname"
         cat "${temp_file}.sorted"
     } | sudo tee "$HOSTS_FILE" > /dev/null
+    sudo chown master:master "$HOSTS_FILE"
 
     count=$(wc -l < "${temp_file}.sorted")
     rm -f "$temp_file" "${temp_file}.sorted"
@@ -3304,7 +3305,7 @@ ufw --force enable
         fi
 
         # Neuen Eintrag hinzufügen
-        proxy_exec "echo '${vlan_ip} ${new_hostname}' | sudo tee -a ${HOSTS_FILE}" > /dev/null
+        proxy_exec "echo '${vlan_ip} ${new_hostname}' | sudo tee -a ${HOSTS_FILE} > /dev/null && sudo chown master:master ${HOSTS_FILE}"
 
         if [[ "$hosts_updated" == "true" ]]; then
             echo "  ${vlan_ip} ${new_hostname} aktualisiert."
