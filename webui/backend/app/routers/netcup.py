@@ -10,7 +10,6 @@ from ..models.netcup import DeviceCodeResponse, LoginStatus, Server, InstallRequ
 from ..models.task import TaskCreate
 from ..services.netcup_api import netcup_api
 from ..services.ssh import run_ssh
-from ..services.ssh_utils import run_on_proxy
 from ..services.task_manager import task_manager
 
 logger = logging.getLogger(__name__)
@@ -195,12 +194,16 @@ async def install_server(
             user_id = await netcup_api.get_user_id()
             await out(task_id, f"  User-ID: {user_id}")
 
-            # 4. Proxy-Pubkey lesen
+            # 4. Proxy-Pubkey lesen (direkt aus gemounteter Datei)
             await out(task_id, "Lese Proxy-SSH-Key...")
-            proxy_pubkey = await run_on_proxy("cat /home/master/.ssh/id_ed25519.pub")
-            if not proxy_pubkey.strip():
+            try:
+                with open(f"{settings.ssh_key_path}.pub") as f:
+                    proxy_pubkey = f.read().strip()
+            except FileNotFoundError:
+                raise Exception("Proxy-Pubkey nicht gefunden")
+            if not proxy_pubkey:
                 raise Exception("Konnte Proxy-Pubkey nicht lesen")
-            pubkey_data = " ".join(proxy_pubkey.strip().split()[:2])
+            pubkey_data = " ".join(proxy_pubkey.split()[:2])
             await out(task_id, "  Proxy-Pubkey gelesen")
 
             # 5. SSH-Key bei Netcup suchen/hochladen
@@ -235,25 +238,23 @@ async def install_server(
                     vlan_ip = req.vlan_ip
                 else:
                     # Nächste freie IP aus /etc/vps-hosts ermitteln
-                    hosts_content = await run_on_proxy(
-                        f"cat {settings.vps_hosts_file} 2>/dev/null || true"
-                    )
                     used_octets = {1}  # Proxy ist immer .1
-                    for line in hosts_content.splitlines():
-                        line = line.strip()
-                        if not line or line.startswith("#"):
-                            continue
-                        ip = line.split()[0] if line.split() else ""
-                        m = re.match(r"^10\.10\.0\.(\d+)$", ip)
-                        if m:
-                            used_octets.add(int(m.group(1)))
-
-                    # Prüfe ob Hostname schon einen Eintrag hat
-                    for line in hosts_content.splitlines():
-                        parts = line.strip().split()
-                        if len(parts) >= 2 and parts[1] == req.hostname:
-                            vlan_ip = parts[0]
-                            break
+                    try:
+                        with open(settings.vps_hosts_file) as f:
+                            for line in f:
+                                line = line.strip()
+                                if not line or line.startswith("#"):
+                                    continue
+                                ip = line.split()[0] if line.split() else ""
+                                m = re.match(r"^10\.10\.0\.(\d+)$", ip)
+                                if m:
+                                    used_octets.add(int(m.group(1)))
+                                # Prüfe ob Hostname schon einen Eintrag hat
+                                parts = line.split(None, 1)
+                                if len(parts) == 2 and parts[1] == req.hostname:
+                                    vlan_ip = parts[0]
+                    except FileNotFoundError:
+                        pass
 
                     if not vlan_ip:
                         for i in range(2, 255):
@@ -413,12 +414,25 @@ async def install_server(
             if req.setup_vlan:
                 await out(task_id, "Trage in /etc/vps-hosts ein...")
                 try:
-                    # Alten Eintrag entfernen
-                    await run_on_proxy(
-                        f"sudo sed -i '/ {req.hostname}$/d' {settings.vps_hosts_file} 2>/dev/null; "
-                        f"sudo sed -i '/^{vlan_ip} /d' {settings.vps_hosts_file} 2>/dev/null; "
-                        f"echo '{vlan_ip} {req.hostname}' | sudo tee -a {settings.vps_hosts_file}"
-                    )
+                    # Bestehende Einträge lesen und filtern
+                    lines = []
+                    try:
+                        with open(settings.vps_hosts_file) as f:
+                            for line in f:
+                                stripped = line.strip()
+                                if not stripped or stripped.startswith("#"):
+                                    lines.append(line.rstrip("\n"))
+                                    continue
+                                parts = stripped.split(None, 1)
+                                # Alten Eintrag für diesen Hostname oder IP entfernen
+                                if len(parts) == 2 and (parts[1] == req.hostname or parts[0] == vlan_ip):
+                                    continue
+                                lines.append(line.rstrip("\n"))
+                    except FileNotFoundError:
+                        pass
+                    lines.append(f"{vlan_ip} {req.hostname}")
+                    with open(settings.vps_hosts_file, "w") as f:
+                        f.write("\n".join(lines) + "\n")
                     await out(task_id, f"  {vlan_ip} {req.hostname} eingetragen.")
                 except Exception as e:
                     await out(task_id, f"  WARNUNG: vps-hosts Eintrag fehlgeschlagen: {e}")
@@ -432,10 +446,7 @@ async def install_server(
                     await asyncio.sleep(10)
                     await out(task_id, f"  Versuch {attempt}/12...")
                     rc, _, _ = await run_ssh(
-                        settings.proxy_host,
-                        f"ssh -o StrictHostKeyChecking=no -o UserKnownHostsFile=/dev/null "
-                        f"-o ConnectTimeout=5 -o BatchMode=yes master@{vlan_ip} hostname",
-                        timeout=15,
+                        vlan_ip, "hostname", timeout=10,
                     )
                     if rc == 0:
                         ssh_ok = True

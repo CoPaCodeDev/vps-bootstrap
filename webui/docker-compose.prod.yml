@@ -14,7 +14,7 @@ services:
     user: "1000:1000"
     volumes:
       - /home/master/.ssh:/home/master/.ssh:ro
-      - /etc/vps-hosts:/etc/vps-hosts:ro
+      - /etc/vps-hosts:/etc/vps-hosts
       - /opt/vps:/opt/vps:ro
       - /opt/traefik:/opt/traefik
       - /opt/authelia:/opt/authelia
