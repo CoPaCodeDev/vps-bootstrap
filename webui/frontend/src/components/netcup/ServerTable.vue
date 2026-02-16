@@ -33,12 +33,12 @@ defineEmits<{
     </Column>
     <Column header="Status">
       <template #body="{ data }">
-        {{ data.status || data.serverStatus || '-' }}
+        {{ data.serverLiveInfo?.state || '-' }}
       </template>
     </Column>
     <Column header="IP">
       <template #body="{ data }">
-        <code>{{ data.ip || data.serverIp || '-' }}</code>
+        <code>{{ data.ipv4Addresses?.[0]?.ip || '-' }}</code>
       </template>
     </Column>
     <Column header="Aktionen" style="width: 10rem">

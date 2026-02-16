@@ -81,9 +81,13 @@ async def install_server(
             images = await netcup_api.get_images(server_id)
             image_id = None
             for img in images:
-                if req.image.lower() in str(img.get("name", "")).lower():
+                image_name = img.get("image", {}).get("name", "") or img.get("name", "")
+                flavour_name = img.get("name", "")
+                search_text = f"{image_name} {flavour_name}".lower()
+                if req.image.lower() in search_text:
                     image_id = img.get("id") or img.get("imageFlavourId")
-                    await task_manager.push_output(task_id, f"Image gefunden: {img.get('name')}")
+                    label = f"{image_name} ({flavour_name})" if image_name != flavour_name else flavour_name
+                    await task_manager.push_output(task_id, f"Image gefunden: {label}")
                     break
 
             if not image_id:

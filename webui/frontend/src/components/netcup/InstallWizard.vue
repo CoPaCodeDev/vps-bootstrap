@@ -35,9 +35,15 @@ watch(() => props.visible, async (open) => {
   images.value = []
   loadingImages.value = true
   try {
-    images.value = await get<any[]>(`/netcup/servers/${props.serverId}/images`)
+    const raw = await get<any[]>(`/netcup/servers/${props.serverId}/images`)
+    images.value = raw.map(img => ({
+      ...img,
+      label: img.image?.name
+        ? `${img.image.name} (${img.name})`
+        : img.name,
+    }))
     const debian = images.value.find(img =>
-      img.name?.toLowerCase().includes('debian')
+      img.label?.toLowerCase().includes('debian')
     )
     selectedImage.value = debian || images.value[0] || null
   } catch {
@@ -52,7 +58,7 @@ async function startInstall() {
   try {
     await task.startTask(`/netcup/servers/${props.serverId}/install`, {
       hostname: hostname.value,
-      image: selectedImage.value.name,
+      image: selectedImage.value.image?.name || selectedImage.value.name,
     })
     toast.add({ severity: 'info', summary: 'Installation gestartet', life: 3000 })
   } catch (e: any) {
@@ -83,7 +89,7 @@ async function startInstall() {
         <Select
           v-model="selectedImage"
           :options="images"
-          optionLabel="name"
+          optionLabel="label"
           placeholder="Image auswählen..."
           :loading="loadingImages"
           class="w-full"
