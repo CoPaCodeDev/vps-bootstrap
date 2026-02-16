@@ -1,3 +1,4 @@
+import asyncio
 import json
 import os
 import time
@@ -183,7 +184,19 @@ class NetcupAPI:
 
     async def list_servers(self) -> list[dict]:
         resp = await self._api_request("GET", "/api/v1/servers")
-        return resp.json()
+        servers = resp.json()
+
+        async def enrich(server: dict) -> dict:
+            try:
+                detail = await self.get_server(str(server["id"]))
+                server["ipv4Addresses"] = detail.get("ipv4Addresses", [])
+                server["ipv6Addresses"] = detail.get("ipv6Addresses", [])
+                server["serverLiveInfo"] = detail.get("serverLiveInfo")
+            except Exception:
+                pass
+            return server
+
+        return await asyncio.gather(*[enrich(s) for s in servers])
 
     async def get_server(self, server_id: str) -> dict:
         resp = await self._api_request(

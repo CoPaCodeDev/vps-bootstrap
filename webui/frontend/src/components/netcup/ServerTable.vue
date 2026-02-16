@@ -33,7 +33,7 @@ defineEmits<{
     </Column>
     <Column header="Status">
       <template #body="{ data }">
-        {{ data.disabled ? 'deaktiviert' : 'aktiv' }}
+        {{ data.serverLiveInfo?.state || (data.disabled ? 'deaktiviert' : 'aktiv') }}
       </template>
     </Column>
     <Column header="IP">
