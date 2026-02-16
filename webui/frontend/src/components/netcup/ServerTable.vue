@@ -33,12 +33,17 @@ defineEmits<{
     </Column>
     <Column header="Status">
       <template #body="{ data }">
-        {{ data.serverLiveInfo?.state || '-' }}
+        {{ data.disabled ? 'deaktiviert' : 'aktiv' }}
       </template>
     </Column>
     <Column header="IP">
       <template #body="{ data }">
-        <code>{{ data.ipv4Addresses?.[0]?.ip || '-' }}</code>
+        <div v-if="data.ipv4Addresses?.length">
+          <code v-for="addr in data.ipv4Addresses" :key="addr.id" class="ip-addr">
+            {{ addr.ip }}
+          </code>
+        </div>
+        <span v-else>-</span>
       </template>
     </Column>
     <Column header="Aktionen" style="width: 10rem">
@@ -70,5 +75,9 @@ defineEmits<{
 .actions {
   display: flex;
   gap: 0.25rem;
+}
+
+.ip-addr {
+  display: block;
 }
 </style>
