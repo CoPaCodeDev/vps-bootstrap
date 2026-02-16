@@ -193,7 +193,14 @@ async function startInstall() {
     />
 
     <template #footer>
-      <Button label="Abbrechen" text @click="emit('update:visible', false)" />
+      <small v-if="task.running.value" class="install-hint">
+        Installation läuft bei Netcup weiter, auch wenn dieses Fenster geschlossen wird.
+      </small>
+      <Button
+        :label="task.output.value.length > 0 ? 'Schließen' : 'Abbrechen'"
+        text
+        @click="emit('update:visible', false)"
+      />
       <Button
         v-if="task.output.value.length === 0"
         label="Installieren"
@@ -241,5 +248,10 @@ async function startInstall() {
 
 .p-error {
   color: var(--p-red-500);
+}
+
+.install-hint {
+  margin-right: auto;
+  opacity: 0.7;
 }
 </style>
