@@ -53,6 +53,16 @@ async def get_server(server_id: str, user: str = Depends(get_current_user)):
         raise HTTPException(status_code=500, detail=str(e))
 
 
+@router.get("/servers/{server_id}/images")
+async def get_images(server_id: str, user: str = Depends(get_current_user)):
+    """Verfügbare Images für einen Server abrufen."""
+    try:
+        images = await netcup_api.get_images(server_id)
+        return images
+    except Exception as e:
+        raise HTTPException(status_code=500, detail=str(e))
+
+
 @router.post("/servers/{server_id}/install", response_model=TaskCreate)
 async def install_server(
     server_id: str,

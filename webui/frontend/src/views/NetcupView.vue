@@ -9,6 +9,7 @@ import Button from 'primevue/button'
 const store = useNetcupStore()
 const showInstall = ref(false)
 const installServerId = ref('')
+const installHostname = ref('')
 
 onMounted(() => {
   store.fetchServers()
@@ -18,8 +19,9 @@ function onLoggedIn() {
   store.fetchServers()
 }
 
-function startInstall(serverId: string) {
+function startInstall(serverId: string, hostname: string) {
   installServerId.value = serverId
+  installHostname.value = hostname
   showInstall.value = true
 }
 </script>
@@ -61,6 +63,7 @@ function startInstall(serverId: string) {
     <InstallWizard
       v-model:visible="showInstall"
       :server-id="installServerId"
+      :initial-hostname="installHostname"
     />
   </div>
 </template>

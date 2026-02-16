@@ -9,7 +9,7 @@ defineProps<{
 }>()
 
 defineEmits<{
-  install: [serverId: string]
+  install: [serverId: string, hostname: string]
   details: [serverId: string]
 }>()
 </script>
@@ -56,7 +56,7 @@ defineEmits<{
             text
             size="small"
             severity="secondary"
-            @click="$emit('install', data.id || data.serverId)"
+            @click="$emit('install', data.id || data.serverId, data.hostname || '')"
             title="Installieren"
           />
         </div>

@@ -1,7 +1,8 @@
 <script setup lang="ts">
-import { ref } from 'vue'
+import { ref, watch } from 'vue'
 import Dialog from 'primevue/dialog'
 import InputText from 'primevue/inputtext'
+import Select from 'primevue/select'
 import Button from 'primevue/button'
 import { useApi } from '@/composables/useApi'
 import { useTaskStream } from '@/composables/useTaskStream'
@@ -11,25 +12,47 @@ import { useToast } from 'primevue/usetoast'
 const props = defineProps<{
   visible: boolean
   serverId: string
+  initialHostname?: string
 }>()
 
 const emit = defineEmits<{
   'update:visible': [value: boolean]
 }>()
 
-const { post } = useApi()
+const { get, post } = useApi()
 const toast = useToast()
 const task = useTaskStream()
 
 const hostname = ref('')
-const image = ref('Debian 13')
+const images = ref<any[]>([])
+const selectedImage = ref<any>(null)
+const loadingImages = ref(false)
+
+watch(() => props.visible, async (open) => {
+  if (!open) return
+  hostname.value = props.initialHostname || ''
+  selectedImage.value = null
+  images.value = []
+  loadingImages.value = true
+  try {
+    images.value = await get<any[]>(`/netcup/servers/${props.serverId}/images`)
+    const debian = images.value.find(img =>
+      img.name?.toLowerCase().includes('debian')
+    )
+    selectedImage.value = debian || images.value[0] || null
+  } catch {
+    toast.add({ severity: 'error', summary: 'Fehler', detail: 'Images konnten nicht geladen werden', life: 3000 })
+  } finally {
+    loadingImages.value = false
+  }
+})
 
 async function startInstall() {
-  if (!hostname.value) return
+  if (!hostname.value || !selectedImage.value) return
   try {
     await task.startTask(`/netcup/servers/${props.serverId}/install`, {
       hostname: hostname.value,
-      image: image.value,
+      image: selectedImage.value.name,
     })
     toast.add({ severity: 'info', summary: 'Installation gestartet', life: 3000 })
   } catch (e: any) {
@@ -57,7 +80,14 @@ async function startInstall() {
       </div>
       <div class="field">
         <label>Image</label>
-        <InputText v-model="image" placeholder="Debian 13" class="w-full" />
+        <Select
+          v-model="selectedImage"
+          :options="images"
+          optionLabel="name"
+          placeholder="Image auswählen..."
+          :loading="loadingImages"
+          class="w-full"
+        />
       </div>
     </div>
 
@@ -75,7 +105,7 @@ async function startInstall() {
         icon="pi pi-download"
         severity="warn"
         @click="startInstall"
-        :disabled="!hostname"
+        :disabled="!hostname || !selectedImage"
       />
     </template>
   </Dialog>
