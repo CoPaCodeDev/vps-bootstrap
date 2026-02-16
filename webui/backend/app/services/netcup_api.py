@@ -286,7 +286,7 @@ class NetcupAPI:
             json={"hostname": hostname},
             headers_extra={"Content-Type": "application/merge-patch+json"},
         )
-        return resp.json()
+        return resp.json() if resp.text else {}
 
     async def set_nickname(self, server_id: str, nickname: str) -> dict:
         """Nickname eines Servers setzen."""
@@ -296,7 +296,7 @@ class NetcupAPI:
             json={"nickname": nickname},
             headers_extra={"Content-Type": "application/merge-patch+json"},
         )
-        return resp.json()
+        return resp.json() if resp.text else {}
 
     async def get_user_id(self) -> int:
         """User-ID aus Tasks-API oder JWT extrahieren."""
