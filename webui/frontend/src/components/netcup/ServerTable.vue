@@ -27,6 +27,9 @@ async function serverAction(serverId: string, action: string) {
     const labels: Record<string, string> = { start: 'gestartet', stop: 'gestoppt', restart: 'neugestartet' }
     toast.add({ severity: 'success', summary: `Server ${labels[action]}`, life: 3000 })
     emit('refresh')
+    // Netcup braucht etwas bis der Status aktuell ist
+    setTimeout(() => emit('refresh'), 5000)
+    setTimeout(() => emit('refresh'), 15000)
   } catch (e: any) {
     toast.add({ severity: 'error', summary: 'Fehler', detail: e.detail, life: 5000 })
   } finally {
