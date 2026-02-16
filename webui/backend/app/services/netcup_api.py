@@ -114,15 +114,18 @@ class NetcupAPI:
 
         token_url = f"{settings.netcup_keycloak_base}/realms/scp/protocol/openid-connect/token"
 
-        async with httpx.AsyncClient() as client:
-            resp = await client.post(
-                token_url,
-                data={
-                    "grant_type": "urn:ietf:params:oauth:grant-type:device_code",
-                    "client_id": settings.netcup_client_id,
-                    "device_code": login["device_code"],
-                },
-            )
+        try:
+            async with httpx.AsyncClient() as client:
+                resp = await client.post(
+                    token_url,
+                    data={
+                        "grant_type": "urn:ietf:params:oauth:grant-type:device_code",
+                        "client_id": settings.netcup_client_id,
+                        "device_code": login["device_code"],
+                    },
+                )
+        except Exception:
+            return {"status": "pending", "message": "Verbindungsfehler, versuche erneut..."}
 
         if resp.status_code == 200:
             tokens = resp.json()
@@ -133,9 +136,7 @@ class NetcupAPI:
 
         data = resp.json()
         error = data.get("error", "")
-        if error == "authorization_pending":
-            return {"status": "pending", "message": "Warte auf Bestätigung..."}
-        elif error == "slow_down":
+        if error in ("authorization_pending", "slow_down"):
             return {"status": "pending", "message": "Warte auf Bestätigung..."}
         else:
             self._pending_logins.pop(session_id, None)

@@ -8,11 +8,22 @@ const store = useNetcupStore()
 const verificationUri = ref('')
 const userCode = ref('')
 const polling = ref(false)
+const errorMsg = ref('')
 let pollInterval: number | null = null
 
 const emit = defineEmits<{ loggedIn: [] }>()
 
+function stopPolling() {
+  polling.value = false
+  if (pollInterval) {
+    clearInterval(pollInterval)
+    pollInterval = null
+  }
+}
+
 async function startLogin() {
+  errorMsg.value = ''
+  verificationUri.value = ''
   const result = await store.startLogin()
   verificationUri.value = result.verification_uri
   userCode.value = result.user_code
@@ -20,20 +31,24 @@ async function startLogin() {
   // Polling starten
   polling.value = true
   pollInterval = window.setInterval(async () => {
-    const status = await store.checkLoginStatus()
-    if (status === 'success') {
-      polling.value = false
-      if (pollInterval) clearInterval(pollInterval)
-      emit('loggedIn')
-    } else if (status === 'error') {
-      polling.value = false
-      if (pollInterval) clearInterval(pollInterval)
+    try {
+      const status = await store.checkLoginStatus()
+      if (status === 'success') {
+        stopPolling()
+        emit('loggedIn')
+      } else if (status === 'error') {
+        stopPolling()
+        errorMsg.value = 'Anmeldung fehlgeschlagen oder abgelaufen. Bitte erneut versuchen.'
+      }
+    } catch {
+      stopPolling()
+      errorMsg.value = 'Verbindungsfehler. Bitte erneut versuchen.'
     }
   }, 5000)
 }
 
 onUnmounted(() => {
-  if (pollInterval) clearInterval(pollInterval)
+  stopPolling()
 })
 
 function openVerification() {
@@ -69,6 +84,15 @@ function openVerification() {
           <i class="pi pi-spin pi-spinner"></i>
           Warte auf Bestätigung...
         </p>
+        <div v-if="errorMsg" class="error-msg">
+          <p>{{ errorMsg }}</p>
+          <Button
+            label="Erneut versuchen"
+            icon="pi pi-refresh"
+            severity="secondary"
+            @click="startLogin"
+          />
+        </div>
       </div>
     </template>
   </Card>
@@ -107,6 +131,14 @@ function openVerification() {
   font-size: 0.875rem;
   display: flex;
   align-items: center;
+  gap: 0.5rem;
+}
+
+.error-msg {
+  color: var(--p-red-500);
+  font-size: 0.875rem;
+  display: flex;
+  flex-direction: column;
   gap: 0.5rem;
 }
 </style>
