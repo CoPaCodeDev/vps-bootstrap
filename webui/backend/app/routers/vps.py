@@ -6,6 +6,7 @@ import uuid
 from fastapi import APIRouter, Depends, HTTPException, UploadFile, File, Form
 from fastapi.responses import FileResponse
 
+from ..config import settings
 from ..dependencies import get_current_user
 from ..models.vps import VPS, VPSStatus, ExecRequest
 from ..models.task import TaskCreate
@@ -18,8 +19,10 @@ router = APIRouter(prefix="/vps", tags=["VPS"])
 
 @router.get("/", response_model=list[VPS])
 async def list_vps(user: str = Depends(get_current_user)):
-    """Liste aller VPS aus /etc/vps-hosts."""
-    return parse_hosts_file()
+    """Liste aller VPS aus /etc/vps-hosts (inkl. Proxy)."""
+    hosts = parse_hosts_file()
+    proxy = VPS(name="proxy", host="proxy", ip=settings.proxy_host)
+    return [proxy] + hosts
 
 
 @router.post("/scan", response_model=TaskCreate)
