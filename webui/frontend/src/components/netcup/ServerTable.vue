@@ -67,6 +67,12 @@ async function serverAction(serverId: string, action: string) {
         <span v-else>-</span>
       </template>
     </Column>
+    <Column header="CloudVLAN">
+      <template #body="{ data }">
+        <code v-if="data.vlanIp">{{ data.vlanIp }}</code>
+        <span v-else>-</span>
+      </template>
+    </Column>
     <Column header="Aktionen" style="width: 14rem">
       <template #body="{ data }">
         <div class="actions">

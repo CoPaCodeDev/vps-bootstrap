@@ -47,9 +47,33 @@ async def list_servers(user: str = Depends(get_current_user)):
     """Netcup-Server auflisten."""
     try:
         servers = await netcup_api.list_servers()
-        return servers
     except Exception as e:
         raise HTTPException(status_code=401, detail=str(e))
+
+    # vps-hosts vom Proxy lesen
+    try:
+        hosts_content = await run_on_proxy(f"cat {settings.vps_hosts_file} 2>/dev/null || true")
+    except Exception:
+        hosts_content = ""
+
+    # Hostname → IP Mapping aufbauen
+    vlan_map = {}
+    for line in hosts_content.splitlines():
+        line = line.strip()
+        if not line or line.startswith("#"):
+            continue
+        parts = line.split(None, 1)
+        if len(parts) == 2:
+            vlan_map[parts[1]] = parts[0]
+
+    # Jeden Server mit vlanIp anreichern (Match über nickname oder hostname)
+    for server in servers:
+        nickname = server.get("nickname", "")
+        hostname = server.get("hostname", "")
+        vlan_ip = vlan_map.get(nickname) or vlan_map.get(hostname) or ""
+        server["vlanIp"] = vlan_ip
+
+    return servers
 
 
 @router.get("/servers/{server_id}")
