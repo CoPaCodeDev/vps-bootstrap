@@ -30,6 +30,7 @@ const hostname = ref('')
 const password = ref('')
 const passwordConfirm = ref('')
 const setupVlan = ref(true)
+const vlanIp = ref('')
 const images = ref<any[]>([])
 const selectedImage = ref<any>(null)
 const loadingImages = ref(false)
@@ -64,11 +65,16 @@ watch(() => props.visible, async (open) => {
   password.value = ''
   passwordConfirm.value = ''
   setupVlan.value = true
+  vlanIp.value = ''
   selectedImage.value = null
   images.value = []
   loadingImages.value = true
   try {
-    const raw = await get<any[]>(`/netcup/servers/${props.serverId}/images`)
+    const [raw, nextIp] = await Promise.all([
+      get<any[]>(`/netcup/servers/${props.serverId}/images`),
+      get<{ ip: string }>('/netcup/vlan/next-ip'),
+    ])
+    vlanIp.value = nextIp.ip
     images.value = raw.map(img => ({
       ...img,
       label: img.image?.name
@@ -94,6 +100,7 @@ async function startInstall() {
       image: selectedImage.value.image?.name || selectedImage.value.name,
       password: password.value,
       setup_vlan: setupVlan.value,
+      vlan_ip: setupVlan.value ? vlanIp.value : '',
     })
     toast.add({ severity: 'info', summary: 'Installation gestartet', life: 3000 })
   } catch (e: any) {
@@ -170,6 +177,12 @@ async function startInstall() {
       <div class="field-checkbox">
         <Checkbox v-model="setupVlan" :binary="true" inputId="setupVlan" />
         <label for="setupVlan">CloudVLAN einrichten</label>
+      </div>
+
+      <div v-if="setupVlan" class="field">
+        <label>CloudVLAN-IP</label>
+        <InputText v-model="vlanIp" placeholder="10.10.0.x" class="w-full" />
+        <small>Nächste freie IP vorausgewählt</small>
       </div>
     </div>
 

@@ -30,3 +30,4 @@ class InstallRequest(BaseModel):
     image: str
     password: str
     setup_vlan: bool = True
+    vlan_ip: str = ""

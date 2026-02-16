@@ -105,6 +105,30 @@ async def change_server_state(
         raise HTTPException(status_code=500, detail=str(e))
 
 
+@router.get("/vlan/next-ip")
+async def next_vlan_ip(user: str = Depends(get_current_user)):
+    """Nächste freie CloudVLAN-IP ermitteln."""
+    used_octets = {1}
+    try:
+        with open(settings.vps_hosts_file) as f:
+            for line in f:
+                line = line.strip()
+                if not line or line.startswith("#"):
+                    continue
+                ip = line.split()[0] if line.split() else ""
+                m = re.match(r"^10\.10\.0\.(\d+)$", ip)
+                if m:
+                    used_octets.add(int(m.group(1)))
+    except FileNotFoundError:
+        pass
+
+    for i in range(2, 255):
+        if i not in used_octets:
+            return {"ip": f"10.10.0.{i}"}
+
+    raise HTTPException(status_code=409, detail="Keine freie CloudVLAN-IP verfügbar")
+
+
 @router.get("/servers/{server_id}/images")
 async def get_images(server_id: str, user: str = Depends(get_current_user)):
     """Verfügbare Images für einen Server abrufen."""
@@ -206,32 +230,36 @@ async def install_server(
                 vlan_id = await netcup_api.get_vlan_id()
                 await out(task_id, f"  VLAN-ID: {vlan_id}")
 
-                # Nächste freie IP aus /etc/vps-hosts auf dem Proxy ermitteln
-                hosts_content = await run_on_proxy(
-                    f"cat {settings.vps_hosts_file} 2>/dev/null || true"
-                )
-                used_octets = {1}  # Proxy ist immer .1
-                for line in hosts_content.splitlines():
-                    line = line.strip()
-                    if not line or line.startswith("#"):
-                        continue
-                    ip = line.split()[0] if line.split() else ""
-                    m = re.match(r"^10\.10\.0\.(\d+)$", ip)
-                    if m:
-                        used_octets.add(int(m.group(1)))
+                if req.vlan_ip:
+                    # Vom Benutzer gewählte IP verwenden
+                    vlan_ip = req.vlan_ip
+                else:
+                    # Nächste freie IP aus /etc/vps-hosts ermitteln
+                    hosts_content = await run_on_proxy(
+                        f"cat {settings.vps_hosts_file} 2>/dev/null || true"
+                    )
+                    used_octets = {1}  # Proxy ist immer .1
+                    for line in hosts_content.splitlines():
+                        line = line.strip()
+                        if not line or line.startswith("#"):
+                            continue
+                        ip = line.split()[0] if line.split() else ""
+                        m = re.match(r"^10\.10\.0\.(\d+)$", ip)
+                        if m:
+                            used_octets.add(int(m.group(1)))
 
-                # Prüfe ob Hostname schon einen Eintrag hat
-                for line in hosts_content.splitlines():
-                    parts = line.strip().split()
-                    if len(parts) >= 2 and parts[1] == req.hostname:
-                        vlan_ip = parts[0]
-                        break
-
-                if not vlan_ip:
-                    for i in range(2, 255):
-                        if i not in used_octets:
-                            vlan_ip = f"10.10.0.{i}"
+                    # Prüfe ob Hostname schon einen Eintrag hat
+                    for line in hosts_content.splitlines():
+                        parts = line.strip().split()
+                        if len(parts) >= 2 and parts[1] == req.hostname:
+                            vlan_ip = parts[0]
                             break
+
+                    if not vlan_ip:
+                        for i in range(2, 255):
+                            if i not in used_octets:
+                                vlan_ip = f"10.10.0.{i}"
+                                break
 
                 if not vlan_ip:
                     raise Exception("Keine freie CloudVLAN-IP verfügbar")
