@@ -26,6 +26,11 @@ defineEmits<{
         {{ data.name || data.serverName || '-' }}
       </template>
     </Column>
+    <Column header="Spitzname">
+      <template #body="{ data }">
+        {{ data.nickname || '-' }}
+      </template>
+    </Column>
     <Column header="Status">
       <template #body="{ data }">
         {{ data.status || data.serverStatus || '-' }}
