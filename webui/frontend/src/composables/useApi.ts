@@ -28,7 +28,20 @@ export function useApi() {
         opts.body = JSON.stringify(body)
       }
 
-      const resp = await fetch(`${API_BASE}${path}`, opts)
+      let resp: Response
+      try {
+        resp = await fetch(`${API_BASE}${path}`, opts)
+      } catch {
+        // CORS-Fehler durch Auth-Redirect (Authelia-Session abgelaufen)
+        window.location.reload()
+        throw { status: 401, detail: 'Sitzung abgelaufen' } as ApiError
+      }
+
+      // Redirect zur Auth-Seite (gleiche Origin, kein CORS)
+      if (resp.redirected && !resp.url.includes(API_BASE)) {
+        window.location.reload()
+        throw { status: 401, detail: 'Sitzung abgelaufen' } as ApiError
+      }
 
       if (!resp.ok) {
         const data = await resp.json().catch(() => ({}))
