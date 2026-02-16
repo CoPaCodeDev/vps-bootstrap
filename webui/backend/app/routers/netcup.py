@@ -53,7 +53,8 @@ async def list_servers(user: str = Depends(get_current_user)):
     # vps-hosts vom Proxy lesen
     try:
         hosts_content = await run_on_proxy(f"cat {settings.vps_hosts_file} 2>/dev/null || true")
-    except Exception:
+    except Exception as e:
+        logger.warning("Konnte vps-hosts nicht vom Proxy lesen: %s", e)
         hosts_content = ""
 
     # Hostname → IP Mapping aufbauen
@@ -65,6 +66,8 @@ async def list_servers(user: str = Depends(get_current_user)):
         parts = line.split(None, 1)
         if len(parts) == 2:
             vlan_map[parts[1]] = parts[0]
+
+    logger.debug("vlan_map: %s", vlan_map)
 
     # Jeden Server mit vlanIp anreichern (Match über nickname oder hostname)
     for server in servers:
