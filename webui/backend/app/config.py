@@ -7,6 +7,7 @@ class Settings(BaseSettings):
     ssh_key_path: str = "/home/master/.ssh/id_ed25519"
     ssh_timeout: int = 10
     proxy_host: str = "10.10.0.1"
+    proxy_ssh_target: str = ""  # Docker: host.docker.internal
 
     # Pfade
     vps_hosts_file: str = "/etc/vps-hosts"

@@ -6,6 +6,7 @@ import logging
 from fastapi import APIRouter, WebSocket, WebSocketDisconnect
 
 from ..services.hosts import resolve_host
+from ..services.ssh import resolve_ssh_target
 from ..services.terminal import TerminalSession
 
 logger = logging.getLogger(__name__)
@@ -34,7 +35,7 @@ async def terminal_ws(websocket: WebSocket, host: str):
     cols = int(websocket.query_params.get("cols", "80"))
     rows = int(websocket.query_params.get("rows", "24"))
 
-    session = TerminalSession(ip)
+    session = TerminalSession(resolve_ssh_target(ip))
     try:
         await session.connect(cols=cols, rows=rows)
         await websocket.send_json({"type": "connected"})

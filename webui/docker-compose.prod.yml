@@ -12,6 +12,8 @@ services:
     networks:
       - traefik
     user: "1000:1000"
+    extra_hosts:
+      - "host.docker.internal:host-gateway"
     volumes:
       - /home/master/.ssh:/home/master/.ssh:ro
       - /etc/vps-hosts:/etc/vps-hosts
@@ -21,6 +23,7 @@ services:
       - /home/master/.config/vps-cli:/home/master/.config/vps-cli
     environment:
       - VPS_DASHBOARD_DEBUG=false
+      - VPS_DASHBOARD_PROXY_SSH_TARGET=host.docker.internal
       - HOME=/home/master
     restart: unless-stopped
 

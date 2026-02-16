@@ -8,6 +8,17 @@ from ..config import settings
 logger = logging.getLogger(__name__)
 
 
+def resolve_ssh_target(host: str) -> str:
+    """Löst den SSH-Zielhost auf.
+
+    Für den Proxy wird proxy_ssh_target verwendet (z.B. host.docker.internal),
+    da der Container den Host nicht über die WireGuard-IP erreichen kann.
+    """
+    if host in ("proxy", "localhost", settings.proxy_host):
+        return settings.proxy_ssh_target or settings.proxy_host
+    return host
+
+
 async def run_ssh(
     host: str,
     command: str,
@@ -21,8 +32,7 @@ async def run_ssh(
     """
     effective_timeout = timeout or settings.ssh_timeout
 
-    # "proxy" / "localhost" auf die echte Proxy-IP auflösen
-    target = settings.proxy_host if host in ("proxy", "localhost") else host
+    target = resolve_ssh_target(host)
 
     ssh_cmd = (
         f"ssh -o StrictHostKeyChecking=no -o UserKnownHostsFile=/dev/null -o LogLevel=ERROR "
@@ -60,7 +70,7 @@ async def run_ssh_stream(
     command: str,
 ) -> AsyncIterator[str]:
     """Führt einen SSH-Befehl aus und streamt die Ausgabe zeilenweise."""
-    target = settings.proxy_host if host in ("proxy", "localhost") else host
+    target = resolve_ssh_target(host)
 
     ssh_cmd = (
         f"ssh -o StrictHostKeyChecking=no -o UserKnownHostsFile=/dev/null -o LogLevel=ERROR "
@@ -91,7 +101,7 @@ async def scp_upload(
     Gibt (exit_code, stderr) zurück.
     """
     effective_timeout = timeout or 120
-    target = settings.proxy_host if host in ("proxy", "localhost") else host
+    target = resolve_ssh_target(host)
 
     scp_cmd = (
         f"scp -o StrictHostKeyChecking=no -o UserKnownHostsFile=/dev/null -o LogLevel=ERROR "
@@ -135,7 +145,7 @@ async def scp_download(
     Gibt (exit_code, stderr) zurück.
     """
     effective_timeout = timeout or 120
-    target = settings.proxy_host if host in ("proxy", "localhost") else host
+    target = resolve_ssh_target(host)
 
     scp_cmd = (
         f"scp -o StrictHostKeyChecking=no -o UserKnownHostsFile=/dev/null -o LogLevel=ERROR "
