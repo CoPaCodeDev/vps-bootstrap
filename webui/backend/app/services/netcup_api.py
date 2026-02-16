@@ -172,11 +172,14 @@ class NetcupAPI:
             raise Exception("Nicht bei Netcup angemeldet")
 
         url = f"{settings.netcup_base_url}{path}"
+        headers = {"Authorization": f"Bearer {token}"}
+        if "headers_extra" in kwargs:
+            headers.update(kwargs.pop("headers_extra"))
         async with httpx.AsyncClient() as client:
             resp = await client.request(
                 method,
                 url,
-                headers={"Authorization": f"Bearer {token}"},
+                headers=headers,
                 **kwargs,
             )
             resp.raise_for_status()
@@ -201,6 +204,15 @@ class NetcupAPI:
     async def get_server(self, server_id: str) -> dict:
         resp = await self._api_request(
             "GET", f"/api/v1/servers/{server_id}", params={"loadServerLiveInfo": True}
+        )
+        return resp.json()
+
+    async def set_server_state(self, server_id: str, state: str) -> dict:
+        resp = await self._api_request(
+            "PATCH",
+            f"/api/v1/servers/{server_id}",
+            json={"state": state},
+            headers_extra={"Content-Type": "application/merge-patch+json"},
         )
         return resp.json()
 

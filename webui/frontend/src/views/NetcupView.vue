@@ -57,6 +57,7 @@ function startInstall(serverId: string, hostname: string) {
         :servers="store.servers"
         :loading="store.loading"
         @install="startInstall"
+        @refresh="store.fetchServers()"
       />
     </div>
 

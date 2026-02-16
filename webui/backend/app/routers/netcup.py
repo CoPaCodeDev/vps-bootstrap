@@ -53,6 +53,28 @@ async def get_server(server_id: str, user: str = Depends(get_current_user)):
         raise HTTPException(status_code=500, detail=str(e))
 
 
+@router.post("/servers/{server_id}/state/{action}")
+async def change_server_state(
+    server_id: str,
+    action: str,
+    user: str = Depends(get_current_user),
+):
+    """Server starten, stoppen oder neustarten."""
+    state_map = {"start": "ON", "stop": "OFF", "restart": "OFF"}
+    if action not in state_map:
+        raise HTTPException(status_code=400, detail=f"Ungültige Aktion: {action}")
+
+    try:
+        result = await netcup_api.set_server_state(server_id, state_map[action])
+        if action == "restart":
+            import asyncio
+            await asyncio.sleep(3)
+            result = await netcup_api.set_server_state(server_id, "ON")
+        return {"message": f"Server {action} erfolgreich", "result": result}
+    except Exception as e:
+        raise HTTPException(status_code=500, detail=str(e))
+
+
 @router.get("/servers/{server_id}/images")
 async def get_images(server_id: str, user: str = Depends(get_current_user)):
     """Verfügbare Images für einen Server abrufen."""
