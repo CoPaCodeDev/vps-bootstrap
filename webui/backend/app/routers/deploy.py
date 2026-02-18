@@ -24,9 +24,14 @@ async def get_templates(user: str = Depends(get_current_user)):
 @router.get("/templates/{name}", response_model=Template)
 async def get_template(name: str, user: str = Depends(get_current_user)):
     """Template-Details abrufen."""
+    # Erst direkt nach Verzeichnisname suchen
     template_dir = os.path.join(settings.templates_dir, name)
     template = parse_template_conf(template_dir)
     if not template:
+        # Fallback: case-insensitive nach Verzeichnis- oder Template-Name suchen
+        for t in list_templates():
+            if t.name.lower() == name.lower():
+                return t
         raise HTTPException(status_code=404, detail=f"Template '{name}' nicht gefunden")
     return template
 
