@@ -6,6 +6,7 @@ class VPS(BaseModel):
     host: str
     ip: str
     description: str = ""
+    managed: bool = True
 
 
 class VPSStatus(BaseModel):

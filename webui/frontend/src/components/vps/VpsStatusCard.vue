@@ -14,13 +14,16 @@ const router = useRouter()
 
 const online = computed(() => props.status?.online ?? false)
 
+const isManaged = computed(() => props.vps.managed !== false)
+
 function goToDetail() {
+  if (!isManaged.value) return
   router.push({ name: 'vps-detail', params: { host: props.vps.name } })
 }
 </script>
 
 <template>
-  <Card class="vps-card" @click="goToDetail">
+  <Card :class="['vps-card', { 'unmanaged-card': !isManaged }]" @click="goToDetail">
     <template #header>
       <div class="card-header">
         <div class="card-title">
@@ -31,35 +34,45 @@ function goToDetail() {
       </div>
     </template>
     <template #content>
-      <div v-if="status && online" class="stats">
-        <div class="stat">
-          <span class="stat-label">Load</span>
-          <span class="stat-value">{{ status.load || '-' }}</span>
+      <template v-if="isManaged">
+        <div v-if="status && online" class="stats">
+          <div class="stat">
+            <span class="stat-label">Load</span>
+            <span class="stat-value">{{ status.load || '-' }}</span>
+          </div>
+          <div class="stat">
+            <span class="stat-label">Updates</span>
+            <span class="stat-value" :class="{ warn: status.updates_available > 0 }">
+              {{ status.updates_available }}
+            </span>
+          </div>
+          <div class="stat">
+            <span class="stat-label">RAM</span>
+            <span class="stat-value">{{ status.memory_used || '-' }} / {{ status.memory_total || '-' }}</span>
+          </div>
+          <div class="stat">
+            <span class="stat-label">Disk</span>
+            <span class="stat-value">{{ status.disk_used || '-' }} / {{ status.disk_total || '-' }}</span>
+          </div>
         </div>
-        <div class="stat">
-          <span class="stat-label">Updates</span>
-          <span class="stat-value" :class="{ warn: status.updates_available > 0 }">
-            {{ status.updates_available }}
-          </span>
+        <div v-else-if="!status" class="loading-stats">
+          <i class="pi pi-spin pi-spinner"></i> Lade Status...
         </div>
-        <div class="stat">
-          <span class="stat-label">RAM</span>
-          <span class="stat-value">{{ status.memory_used || '-' }} / {{ status.memory_total || '-' }}</span>
+        <div v-else class="offline-msg">
+          Nicht erreichbar
         </div>
-        <div class="stat">
-          <span class="stat-label">Disk</span>
-          <span class="stat-value">{{ status.disk_used || '-' }} / {{ status.disk_total || '-' }}</span>
+        <div v-if="status?.reboot_required" class="reboot-warning">
+          <i class="pi pi-exclamation-triangle"></i> Neustart erforderlich
         </div>
-      </div>
-      <div v-else-if="!status" class="loading-stats">
-        <i class="pi pi-spin pi-spinner"></i> Lade Status...
-      </div>
-      <div v-else class="offline-msg">
-        Nicht erreichbar
-      </div>
-      <div v-if="status?.reboot_required" class="reboot-warning">
-        <i class="pi pi-exclamation-triangle"></i> Neustart erforderlich
-      </div>
+      </template>
+      <template v-else>
+        <div v-if="!status" class="loading-stats">
+          <i class="pi pi-spin pi-spinner"></i> Lade Status...
+        </div>
+        <div v-else-if="!online" class="offline-msg">
+          Nicht erreichbar
+        </div>
+      </template>
     </template>
   </Card>
 </template>
@@ -73,6 +86,15 @@ function goToDetail() {
 .vps-card:hover {
   transform: translateY(-2px);
   box-shadow: 0 4px 12px rgba(0, 0, 0, 0.1);
+}
+
+.unmanaged-card {
+  cursor: default;
+}
+
+.unmanaged-card:hover {
+  transform: none;
+  box-shadow: none;
 }
 
 .card-header {

@@ -35,12 +35,17 @@ async def scan_network(user: str = Depends(get_current_user)):
         tasks = []
 
         async def check_ip(ip: str):
-            online = await check_host_online(ip)
-            if online:
+            # Erst Ping prüfen (via Proxy)
+            ping_ok = await check_host_ping(ip)
+            if ping_ok:
+                # SSH-Hostname versuchen
                 code, hostname, _ = await run_ssh(ip, "hostname", timeout=5)
                 if code == 0 and hostname:
-                    found.append((ip, hostname))
+                    found.append((ip, hostname, "managed"))
                     await task_manager.push_output(task_id, f"  Gefunden: {ip} → {hostname}")
+                else:
+                    found.append((ip, ip, "unmanaged"))
+                    await task_manager.push_output(task_id, f"  Gefunden: {ip} (unmanaged, kein SSH)")
 
         for i in range(2, 255):
             ip = f"10.10.0.{i}"
@@ -58,8 +63,11 @@ async def scan_network(user: str = Depends(get_current_user)):
             f"# VPS Hosts - generiert vom Dashboard",
             "# IP          Hostname",
         ]
-        for ip, hostname in found:
-            lines.append(f"{ip} {hostname}")
+        for ip, hostname, marker in found:
+            if marker == "unmanaged":
+                lines.append(f"{ip} {hostname} unmanaged")
+            else:
+                lines.append(f"{ip} {hostname}")
 
         content = "\n".join(lines) + "\n"
         code, _, err = await run_ssh(
@@ -76,12 +84,32 @@ async def scan_network(user: str = Depends(get_current_user)):
     return TaskCreate(task_id=task_id)
 
 
+async def check_host_ping(ip: str) -> bool:
+    """Prüft ob ein Host per Ping erreichbar ist (via Proxy)."""
+    code, _, _ = await run_ssh("proxy", f"ping -c 1 -W 2 {shlex.quote(ip)}", timeout=10)
+    return code == 0
+
+
+def _find_host(name_or_ip: str) -> VPS | None:
+    """Findet ein VPS-Objekt aus der Hosts-Datei."""
+    for h in parse_hosts_file():
+        if h.name == name_or_ip or h.ip == name_or_ip:
+            return h
+    return None
+
+
 @router.get("/{host}/status", response_model=VPSStatus)
 async def get_vps_status(host: str, user: str = Depends(get_current_user)):
     """Status eines einzelnen VPS."""
     ip = resolve_host(host)
     if not ip:
         raise HTTPException(status_code=404, detail=f"Host '{host}' nicht gefunden")
+
+    # Prüfe ob der Host unmanaged ist
+    vps_entry = _find_host(host)
+    if vps_entry and not vps_entry.managed:
+        ping_ok = await check_host_ping(ip)
+        return VPSStatus(host=host, online=ping_ok)
 
     online = await check_host_online(ip)
     if not online:

@@ -15,8 +15,10 @@ def parse_hosts_file() -> list[VPS]:
                 line = line.strip()
                 if not line or line.startswith("#"):
                     continue
-                parts = line.split(None, 1)
-                if len(parts) >= 2:
+                parts = line.split()
+                if len(parts) >= 3 and parts[2] == "unmanaged":
+                    hosts.append(VPS(name=parts[1], host=parts[1], ip=parts[0], managed=False))
+                elif len(parts) >= 2:
                     ip, name = parts[0], parts[1]
                     hosts.append(VPS(name=name, host=name, ip=ip))
                 elif len(parts) == 1:

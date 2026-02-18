@@ -177,6 +177,9 @@ cmd_scan() {
                 hostname=$(ssh $SSH_OPTS "${SSH_USER}@${ip}" "hostname" 2>/dev/null)
                 if [[ -n "$hostname" ]]; then
                     echo "$ip $hostname"
+                else
+                    # Ping OK, aber kein SSH — als unmanaged markieren
+                    echo "$ip $ip unmanaged"
                 fi
             fi
         ) >> "$temp_file" &
@@ -213,13 +216,19 @@ cmd_list() {
     check_hosts_file
     echo "Konfigurierte VPS:"
     echo ""
-    printf "%-15s %s\n" "IP" "HOSTNAME"
-    printf "%-15s %s\n" "---------------" "---------------"
+    printf "%-15s %-20s %s\n" "IP" "HOSTNAME" "STATUS"
+    printf "%-15s %-20s %s\n" "---------------" "--------------------" "----------"
 
-    while read -r ip hostname; do
+    while IFS= read -r line; do
+        [[ -z "$line" || "$line" == \#* ]] && continue
+        read -r ip hostname marker <<< "$line"
         [[ -z "$ip" ]] && continue
-        printf "%-15s %s\n" "$ip" "$hostname"
-    done < <(get_hosts)
+        if [[ "$marker" == "unmanaged" ]]; then
+            printf "%-15s %-20s %s\n" "$ip" "$hostname" "unmanaged"
+        else
+            printf "%-15s %-20s %s\n" "$ip" "$hostname" "managed"
+        fi
+    done < "$HOSTS_FILE"
 }
 
 # === STATUS ===

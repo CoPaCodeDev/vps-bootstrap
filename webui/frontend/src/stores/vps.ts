@@ -7,6 +7,7 @@ export interface VPS {
   host: string
   ip: string
   description: string
+  managed: boolean
 }
 
 export interface VPSStatus {

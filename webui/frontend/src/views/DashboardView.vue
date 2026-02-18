@@ -1,5 +1,5 @@
 <script setup lang="ts">
-import { onMounted, ref } from 'vue'
+import { computed, onMounted, ref } from 'vue'
 import { useVpsStore } from '@/stores/vps'
 import VpsStatusCard from '@/components/vps/VpsStatusCard.vue'
 import Button from 'primevue/button'
@@ -32,6 +32,9 @@ async function refresh() {
   await vpsStore.fetchHosts()
   vpsStore.fetchAllStatuses()
 }
+
+const managedHosts = computed(() => vpsStore.hosts.filter((h) => h.managed !== false))
+const unmanagedHosts = computed(() => vpsStore.hosts.filter((h) => h.managed === false))
 </script>
 
 <template>
@@ -68,14 +71,28 @@ async function refresh() {
       <Button label="Netzwerk scannen" icon="pi pi-search" @click="startScan" />
     </div>
 
-    <div v-else class="vps-grid">
-      <VpsStatusCard
-        v-for="vps in vpsStore.hosts"
-        :key="vps.ip"
-        :vps="vps"
-        :status="vpsStore.statuses[vps.name]"
-      />
-    </div>
+    <template v-else>
+      <div class="vps-grid">
+        <VpsStatusCard
+          v-for="vps in managedHosts"
+          :key="vps.ip"
+          :vps="vps"
+          :status="vpsStore.statuses[vps.name]"
+        />
+      </div>
+
+      <div v-if="unmanagedHosts.length > 0" class="unmanaged-section">
+        <h2>Weitere Geräte im Netzwerk</h2>
+        <div class="vps-grid">
+          <VpsStatusCard
+            v-for="vps in unmanagedHosts"
+            :key="vps.ip"
+            :vps="vps"
+            :status="vpsStore.statuses[vps.name]"
+          />
+        </div>
+      </div>
+    </template>
   </div>
 </template>
 
@@ -115,5 +132,16 @@ async function refresh() {
 
 .empty-state h3 {
   color: var(--p-text-color);
+}
+
+.unmanaged-section {
+  margin-top: 2rem;
+}
+
+.unmanaged-section h2 {
+  font-size: 1.15rem;
+  font-weight: 600;
+  margin-bottom: 1rem;
+  color: var(--p-text-muted-color);
 }
 </style>
