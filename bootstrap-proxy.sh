@@ -67,7 +67,7 @@ echo "[4/11] CloudVLAN konfiguriert: $CLOUDVLAN_INTERFACE -> $CLOUDVLAN_IP"
 
 # UFW Firewall und Abhängigkeiten installieren
 apt-get update -qq
-apt-get install -y -qq ufw jq curl
+apt-get install -y -qq ufw jq curl samba-common-bin
 echo "[5/11] Firewall wird konfiguriert..."
 
 # fail2ban installieren (SSH Brute-Force Schutz)
