@@ -90,6 +90,13 @@ async def deploy_template(req: DeployRequest, user: str = Depends(get_current_us
     template_dir = os.path.join(settings.templates_dir, req.template)
     template = parse_template_conf(template_dir)
     if not template:
+        # Fallback: case-insensitive nach Verzeichnisname suchen
+        for entry in os.listdir(settings.templates_dir):
+            if entry.lower() == req.template.lower():
+                template_dir = os.path.join(settings.templates_dir, entry)
+                template = parse_template_conf(template_dir)
+                break
+    if not template:
         raise HTTPException(status_code=404, detail=f"Template '{req.template}' nicht gefunden")
 
     async def do_deploy(task_id: str):
