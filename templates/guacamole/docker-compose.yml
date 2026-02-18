@@ -20,7 +20,7 @@ services:
     environment:
       POSTGRES_DB: guacamole
       POSTGRES_USER: guacamole
-      POSTGRES_PASSWORD: {{DB_PASSWORD}}
+      POSTGRES_PASSWORD: "{{DB_PASSWORD}}"
     volumes:
       - ./db-data:/var/lib/postgresql/data
       - initdb:/docker-entrypoint-initdb.d:ro
@@ -49,7 +49,7 @@ services:
       POSTGRESQL_HOSTNAME: postgres
       POSTGRESQL_DATABASE: guacamole
       POSTGRESQL_USER: guacamole
-      POSTGRESQL_PASSWORD: {{DB_PASSWORD}}
+      POSTGRESQL_PASSWORD: "{{DB_PASSWORD}}"
       POSTGRESQL_AUTO_CREATE_ACCOUNTS: "true"
       WEBAPP_CONTEXT: ROOT
     ports:
