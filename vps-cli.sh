@@ -178,8 +178,10 @@ cmd_scan() {
                 if [[ -n "$hostname" ]]; then
                     echo "$ip $hostname"
                 else
-                    # Ping OK, aber kein SSH — als unmanaged markieren
-                    echo "$ip $ip unmanaged"
+                    # Ping OK, aber kein SSH — NetBIOS-Name versuchen
+                    nbname=$(nmblookup -A "$ip" 2>/dev/null | grep '<00>' | grep -v '<GROUP>' | head -1 | awk '{print $1}') || true
+                    nbname=$(echo "$nbname" | tr '[:upper:]' '[:lower:]')
+                    echo "$ip ${nbname:-$ip} unmanaged"
                 fi
             fi
         ) >> "$temp_file" &

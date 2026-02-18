@@ -44,8 +44,15 @@ async def scan_network(user: str = Depends(get_current_user)):
                     found.append((ip, hostname, "managed"))
                     await task_manager.push_output(task_id, f"  Gefunden: {ip} → {hostname}")
                 else:
-                    found.append((ip, ip, "unmanaged"))
-                    await task_manager.push_output(task_id, f"  Gefunden: {ip} (unmanaged, kein SSH)")
+                    # NetBIOS-Name versuchen (via Proxy)
+                    nb_code, nb_out, _ = await run_ssh(
+                        "proxy",
+                        f"nmblookup -A {shlex.quote(ip)} 2>/dev/null | grep '<00>' | grep -v '<GROUP>' | head -1 | awk '{{print $1}}'",
+                        timeout=10,
+                    )
+                    nbname = nb_out.strip().lower() if nb_code == 0 and nb_out.strip() else ip
+                    found.append((ip, nbname, "unmanaged"))
+                    await task_manager.push_output(task_id, f"  Gefunden: {ip} → {nbname} (unmanaged)")
 
         for i in range(2, 255):
             ip = f"10.10.0.{i}"
