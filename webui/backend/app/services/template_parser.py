@@ -94,7 +94,7 @@ def _extract_value(content: str, key: str) -> str | None:
 def _extract_array(content: str, key: str) -> list[str]:
     """Extrahiert ein Bash-Array: KEY=( "val1" "val2" ... )."""
     # Suche nach KEY=(\n  "..." \n  "..." \n)
-    pattern = rf'{key}=\(\s*(.*?)\)'
+    pattern = rf'{key}=\(\s*(.*?)\n\)'
     match = re.search(pattern, content, re.DOTALL)
     if not match:
         return []
