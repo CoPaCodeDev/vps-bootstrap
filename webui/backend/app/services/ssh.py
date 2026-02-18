@@ -1,4 +1,5 @@
 import asyncio
+import functools
 import logging
 import shlex
 from typing import AsyncIterator
@@ -8,14 +9,36 @@ from ..config import settings
 logger = logging.getLogger(__name__)
 
 
+@functools.lru_cache(maxsize=1)
+def _detect_host_gateway() -> str | None:
+    """Ermittelt die Docker-Host-Gateway-IP aus /proc/net/route."""
+    try:
+        with open("/proc/net/route") as f:
+            for line in f:
+                fields = line.split()
+                if len(fields) >= 3 and fields[1] == "00000000":
+                    gw_hex = fields[2]
+                    gw_bytes = bytes.fromhex(gw_hex)
+                    return f"{gw_bytes[3]}.{gw_bytes[2]}.{gw_bytes[1]}.{gw_bytes[0]}"
+    except (FileNotFoundError, IndexError, ValueError):
+        pass
+    return None
+
+
 def resolve_ssh_target(host: str) -> str:
     """Löst den SSH-Zielhost auf.
 
-    Für den Proxy wird proxy_ssh_target verwendet (z.B. host.docker.internal),
+    Für den Proxy wird die Docker-Host-Gateway-IP automatisch erkannt,
     da der Container den Host nicht über die WireGuard-IP erreichen kann.
+    Fallback-Kette: proxy_ssh_target (manuell) → Auto-Detection → proxy_host.
     """
     if host in ("proxy", "localhost", settings.proxy_host):
-        return settings.proxy_ssh_target or settings.proxy_host
+        if settings.proxy_ssh_target:
+            return settings.proxy_ssh_target
+        detected = _detect_host_gateway()
+        if detected:
+            return detected
+        return settings.proxy_host
     return host
 
 
