@@ -174,7 +174,7 @@ cmd_scan() {
             # Schneller Ping-Test
             if ping -c 1 -W 1 "$ip" &>/dev/null; then
                 # SSH-Verbindungstest und Hostname abfragen
-                hostname=$(ssh $SSH_OPTS "${SSH_USER}@${ip}" "hostname" 2>/dev/null)
+                hostname=$(ssh $SSH_OPTS "${SSH_USER}@${ip}" "hostname" 2>/dev/null) || true
                 if [[ -n "$hostname" ]]; then
                     echo "$ip $hostname"
                 else
