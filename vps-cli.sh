@@ -1703,6 +1703,11 @@ cmd_dashboard_setup() {
         "$dashboard_domain" "$middlewares" \
         | proxy_write "${DASHBOARD_DIR}/.env"
 
+    # SSH-Key für Container→Host Verbindung einrichten
+    # Das Backend läuft im Docker-Container und muss per SSH auf den Host zugreifen
+    echo "Richte SSH-Zugang für Container ein..."
+    proxy_exec 'grep -qF "$(cat ~/.ssh/id_ed25519.pub)" ~/.ssh/authorized_keys 2>/dev/null || cat ~/.ssh/id_ed25519.pub >> ~/.ssh/authorized_keys'
+
     # Container bauen und starten
     echo "Baue und starte Dashboard (das kann etwas dauern)..."
     proxy_exec "cd ${DASHBOARD_DIR} && docker compose -f docker-compose.prod.yml up -d --build"
