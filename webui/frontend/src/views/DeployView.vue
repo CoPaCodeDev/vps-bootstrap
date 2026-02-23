@@ -3,7 +3,9 @@ import { ref, onMounted } from 'vue'
 import { useApi } from '@/composables/useApi'
 import TemplateCard from '@/components/deploy/TemplateCard.vue'
 import Button from 'primevue/button'
+import { useMobile } from '@/composables/useMobile'
 
+const { isMobile } = useMobile()
 const { get, loading } = useApi()
 const templates = ref<any[]>([])
 
@@ -18,7 +20,7 @@ async function fetchTemplates() {
   <div>
     <div class="page-header">
       <h1>Deployments</h1>
-      <Button label="Aktualisieren" icon="pi pi-refresh" text @click="fetchTemplates" :loading="loading" />
+      <Button :label="isMobile ? undefined : 'Aktualisieren'" icon="pi pi-refresh" text @click="fetchTemplates" :loading="loading" />
     </div>
 
     <div v-if="loading && templates.length === 0" class="loading">
@@ -56,7 +58,7 @@ async function fetchTemplates() {
 
 .template-grid {
   display: grid;
-  grid-template-columns: repeat(auto-fill, minmax(300px, 1fr));
+  grid-template-columns: repeat(auto-fill, minmax(280px, 1fr));
   gap: 1rem;
 }
 

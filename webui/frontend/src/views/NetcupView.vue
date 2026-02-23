@@ -5,7 +5,9 @@ import DeviceCodeLogin from '@/components/netcup/DeviceCodeLogin.vue'
 import ServerTable from '@/components/netcup/ServerTable.vue'
 import InstallWizard from '@/components/netcup/InstallWizard.vue'
 import Button from 'primevue/button'
+import { useMobile } from '@/composables/useMobile'
 
+const { isMobile } = useMobile()
 const store = useNetcupStore()
 const showInstall = ref(false)
 const installServerId = ref('')
@@ -33,7 +35,7 @@ function startInstall(serverId: string, hostname: string) {
       <div class="actions">
         <Button
           v-if="store.loggedIn"
-          label="Aktualisieren"
+          :label="isMobile ? undefined : 'Aktualisieren'"
           icon="pi pi-refresh"
           text
           @click="store.fetchServers()"
@@ -41,7 +43,7 @@ function startInstall(serverId: string, hostname: string) {
         />
         <Button
           v-if="store.loggedIn"
-          label="Abmelden"
+          :label="isMobile ? undefined : 'Abmelden'"
           icon="pi pi-sign-out"
           severity="secondary"
           text

@@ -1,11 +1,18 @@
 <script setup lang="ts">
 import { ref, onMounted } from 'vue'
 
+defineProps<{
+  mobile?: boolean
+}>()
+
+defineEmits<{
+  'toggle-menu': []
+}>()
+
 const darkMode = ref(false)
 const userName = ref('Dashboard')
 
 onMounted(() => {
-  // Dark Mode aus localStorage
   darkMode.value = localStorage.getItem('darkMode') === 'true'
   applyDarkMode()
 })
@@ -28,6 +35,9 @@ function applyDarkMode() {
 <template>
   <header class="app-header">
     <div class="header-left">
+      <button v-if="mobile" class="icon-btn hamburger" @click="$emit('toggle-menu')">
+        <i class="pi pi-bars"></i>
+      </button>
       <slot name="title">
         <h1 class="page-title"><slot /></h1>
       </slot>
@@ -36,7 +46,7 @@ function applyDarkMode() {
       <button class="icon-btn" @click="toggleDarkMode" :title="darkMode ? 'Light Mode' : 'Dark Mode'">
         <i :class="darkMode ? 'pi pi-sun' : 'pi pi-moon'"></i>
       </button>
-      <div class="user-info">
+      <div v-if="!mobile" class="user-info">
         <i class="pi pi-user"></i>
         <span>{{ userName }}</span>
       </div>
@@ -53,6 +63,12 @@ function applyDarkMode() {
   justify-content: space-between;
   border-bottom: 1px solid var(--p-surface-border);
   background: var(--p-surface-card);
+}
+
+.header-left {
+  display: flex;
+  align-items: center;
+  gap: 0.5rem;
 }
 
 .page-title {
@@ -78,11 +94,18 @@ function applyDarkMode() {
   align-items: center;
   justify-content: center;
   transition: all 0.15s;
+  min-width: 44px;
+  min-height: 44px;
 }
 
 .icon-btn:hover {
   background: var(--p-surface-hover);
   color: var(--p-text-color);
+}
+
+.hamburger {
+  border: none;
+  font-size: 1.25rem;
 }
 
 .user-info {

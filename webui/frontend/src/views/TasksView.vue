@@ -9,7 +9,9 @@ import StatusBadge from '@/components/shared/StatusBadge.vue'
 import LiveTerminal from '@/components/shared/LiveTerminal.vue'
 import { useApi } from '@/composables/useApi'
 import { useWebSocket } from '@/composables/useWebSocket'
+import { useMobile } from '@/composables/useMobile'
 
+const { isMobile } = useMobile()
 const tasksStore = useTasksStore()
 const { get } = useApi()
 
@@ -64,7 +66,7 @@ function formatTime(iso: string) {
     <div class="page-header">
       <h1>Hintergrund-Tasks</h1>
       <Button
-        label="Aktualisieren"
+        :label="isMobile ? undefined : 'Aktualisieren'"
         icon="pi pi-refresh"
         text
         @click="tasksStore.fetchTasks()"
@@ -72,7 +74,24 @@ function formatTime(iso: string) {
       />
     </div>
 
+    <!-- Mobile: Card-Liste -->
+    <div v-if="isMobile" class="task-cards">
+      <div v-for="t in tasksStore.tasks" :key="t.task_id" class="task-card" @click="viewOutput(t)">
+        <div class="card-row">
+          <strong>{{ t.description || t.type }}</strong>
+          <StatusBadge :status="t.status" />
+        </div>
+        <div class="card-detail">
+          <span v-if="t.host">{{ t.host }}</span>
+          <span>{{ formatTime(t.started_at) }}</span>
+        </div>
+      </div>
+      <div v-if="tasksStore.tasks.length === 0" class="empty">Keine Tasks vorhanden</div>
+    </div>
+
+    <!-- Desktop: Tabelle -->
     <DataTable
+      v-else
       :value="tasksStore.tasks"
       :loading="tasksStore.loading"
       stripedRows
@@ -116,7 +135,8 @@ function formatTime(iso: string) {
       v-model:visible="showOutput"
       :header="`Task: ${selectedTask?.description || ''}`"
       :modal="true"
-      :style="{ width: '60rem', maxHeight: '80vh' }"
+      :style="isMobile ? { width: '100%', maxHeight: '80vh' } : { width: '60rem', maxHeight: '80vh' }"
+      :maximizable="isMobile"
     >
       <LiveTerminal
         :lines="taskOutput"
@@ -137,5 +157,44 @@ function formatTime(iso: string) {
 .page-header h1 {
   font-size: 1.5rem;
   font-weight: 700;
+}
+
+.task-cards {
+  display: flex;
+  flex-direction: column;
+  gap: 0.5rem;
+}
+
+.task-card {
+  padding: 0.75rem;
+  background: var(--p-surface-card);
+  border: 1px solid var(--p-surface-border);
+  border-radius: var(--p-border-radius);
+  cursor: pointer;
+  transition: background 0.15s;
+}
+
+.task-card:active {
+  background: var(--p-surface-hover);
+}
+
+.card-row {
+  display: flex;
+  justify-content: space-between;
+  align-items: center;
+  margin-bottom: 0.25rem;
+}
+
+.card-detail {
+  display: flex;
+  gap: 1rem;
+  font-size: 0.8rem;
+  color: var(--p-text-muted-color);
+}
+
+.empty {
+  text-align: center;
+  padding: 2rem;
+  color: var(--p-text-muted-color);
 }
 </style>

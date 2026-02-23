@@ -10,6 +10,9 @@ import AccordionContent from 'primevue/accordioncontent'
 import ContainerList from '@/components/docker/ContainerList.vue'
 import StatusBadge from '@/components/shared/StatusBadge.vue'
 import { useToast } from 'primevue/usetoast'
+import { useMobile } from '@/composables/useMobile'
+
+const { isMobile } = useMobile()
 
 interface DockerOverview {
   host: string
@@ -44,7 +47,7 @@ async function installDocker(host: string) {
   <div>
     <div class="page-header">
       <h1>Docker-Verwaltung</h1>
-      <Button label="Aktualisieren" icon="pi pi-refresh" text @click="fetchOverview" :loading="loading" />
+      <Button :label="isMobile ? undefined : 'Aktualisieren'" icon="pi pi-refresh" text @click="fetchOverview" :loading="loading" />
     </div>
 
     <div v-if="overview.length === 0 && !loading" class="empty-state">

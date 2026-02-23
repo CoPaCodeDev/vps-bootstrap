@@ -11,7 +11,9 @@ import Button from 'primevue/button'
 import Select from 'primevue/select'
 import { useVpsStore } from '@/stores/vps'
 import { useToast } from 'primevue/usetoast'
+import { useMobile } from '@/composables/useMobile'
 
+const { isMobile } = useMobile()
 const { get, post, loading } = useApi()
 const vpsStore = useVpsStore()
 const toast = useToast()
@@ -67,7 +69,7 @@ const hostOptions = vpsStore.hosts.map((h) => ({ label: h.name, value: h.name })
   <div>
     <div class="page-header">
       <h1>Backup-Verwaltung</h1>
-      <Button label="Aktualisieren" icon="pi pi-refresh" text @click="fetchStatus" :loading="loading" />
+      <Button :label="isMobile ? undefined : 'Aktualisieren'" icon="pi pi-refresh" text @click="fetchStatus" :loading="loading" />
     </div>
 
     <!-- Status-Karten -->
@@ -91,16 +93,17 @@ const hostOptions = vpsStore.hosts.map((h) => ({ label: h.name, value: h.name })
             optionValue="value"
             placeholder="Host auswählen..."
             @change="loadSnapshots"
+            class="host-dropdown"
           />
           <Button
-            label="Snapshots laden"
+            :label="isMobile ? undefined : 'Snapshots laden'"
             icon="pi pi-list"
             severity="secondary"
             @click="loadSnapshots"
             :disabled="!selectedHost"
           />
           <Button
-            label="Backup ausführen"
+            :label="isMobile ? undefined : 'Backup ausführen'"
             icon="pi pi-play"
             @click="runBackup"
             :disabled="!selectedHost || task.running.value"
@@ -166,7 +169,17 @@ const hostOptions = vpsStore.hosts.map((h) => ({ label: h.name, value: h.name })
   flex-wrap: wrap;
 }
 
+.host-dropdown {
+  min-width: 180px;
+}
+
 .mt {
   margin-top: 1rem;
+}
+
+@media (max-width: 767px) {
+  .host-dropdown {
+    width: 100%;
+  }
 }
 </style>

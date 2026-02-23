@@ -7,7 +7,9 @@ import StatusBadge from '@/components/shared/StatusBadge.vue'
 import Card from 'primevue/card'
 import Button from 'primevue/button'
 import { useToast } from 'primevue/usetoast'
+import { useMobile } from '@/composables/useMobile'
 
+const { isMobile } = useMobile()
 const { get, post, loading } = useApi()
 const toast = useToast()
 
@@ -44,8 +46,8 @@ async function restart() {
     <div class="page-header">
       <h1>Authelia-Verwaltung</h1>
       <div class="actions">
-        <Button label="Aktualisieren" icon="pi pi-refresh" text @click="fetchAll" :loading="loading" />
-        <Button label="Neustarten" icon="pi pi-replay" severity="secondary" @click="restart" />
+        <Button :label="isMobile ? undefined : 'Aktualisieren'" icon="pi pi-refresh" text @click="fetchAll" :loading="loading" />
+        <Button :label="isMobile ? undefined : 'Neustarten'" icon="pi pi-replay" severity="secondary" @click="restart" />
       </div>
     </div>
 

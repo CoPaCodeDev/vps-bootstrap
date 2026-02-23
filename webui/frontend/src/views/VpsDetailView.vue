@@ -14,7 +14,9 @@ import DataTable from 'primevue/datatable'
 import Column from 'primevue/column'
 import Tree from 'primevue/tree'
 import type { TreeNode } from 'primevue/treenode'
+import Menu from 'primevue/menu'
 import { useToast } from 'primevue/usetoast'
+import { useMobile } from '@/composables/useMobile'
 
 const route = useRoute()
 const host = computed(() => route.params.host as string)
@@ -24,9 +26,37 @@ const toast = useToast()
 const task = useTaskStream()
 
 const status = computed(() => vpsStore.statuses[host.value])
+const { isMobile } = useMobile()
 const showRebootConfirm = ref(false)
 const showTaskOutput = ref(false)
 const terminalCount = ref(1)
+const mobileMenu = ref()
+const showTreePanel = ref(false)
+
+const mobileMenuItems = computed(() => [
+  {
+    label: 'Update',
+    icon: 'pi pi-download',
+    command: () => startUpdate(),
+    disabled: task.running.value,
+  },
+  {
+    label: terminalCount.value === 1 ? 'Terminal teilen' : 'Terminal schließen',
+    icon: terminalCount.value === 1 ? 'pi pi-clone' : 'pi pi-times',
+    command: () => { terminalCount.value = terminalCount.value === 1 ? 2 : 1 },
+    visible: !isMobile.value,
+  },
+  {
+    label: 'Hochladen',
+    icon: 'pi pi-upload',
+    command: () => toggleUpload(),
+  },
+  {
+    label: 'Neustart',
+    icon: 'pi pi-power-off',
+    command: () => confirmReboot(),
+  },
+])
 
 // Upload / Dateibrowser
 const showUpload = ref(false)
@@ -271,7 +301,7 @@ async function doReboot() {
         <h1>{{ host }}</h1>
         <VpsStatusBadge v-if="status" :online="status.online" />
       </div>
-      <div class="actions">
+      <div v-if="!isMobile" class="actions">
         <Button
           label="Update"
           icon="pi pi-download"
@@ -299,6 +329,14 @@ async function doReboot() {
           severity="danger"
           @click="confirmReboot"
         />
+      </div>
+      <div v-else class="actions">
+        <Button
+          icon="pi pi-ellipsis-v"
+          text
+          @click="mobileMenu?.toggle($event)"
+        />
+        <Menu ref="mobileMenu" :model="mobileMenuItems" :popup="true" />
       </div>
     </div>
 
@@ -360,9 +398,9 @@ async function doReboot() {
     <Card class="section">
       <template #title>Terminal</template>
       <template #content>
-        <div class="terminal-grid" :class="{ split: terminalCount === 2 }">
+        <div class="terminal-grid" :class="{ split: !isMobile && terminalCount === 2 }">
           <WebTerminal :host="host" :key="'term-1'" />
-          <WebTerminal v-if="terminalCount === 2" :host="host" :key="'term-2'" />
+          <WebTerminal v-if="!isMobile && terminalCount === 2" :host="host" :key="'term-2'" />
         </div>
       </template>
     </Card>
@@ -385,8 +423,12 @@ async function doReboot() {
       <template #content>
         <div class="upload-layout">
           <!-- Oben: Tree + Dateibrowser -->
-          <div class="browser-row">
-            <div class="tree-panel">
+          <div class="browser-row" :class="{ 'browser-row-mobile': isMobile }">
+            <div v-if="!isMobile || showTreePanel" class="tree-panel" :class="{ 'tree-panel-mobile': isMobile }">
+              <div v-if="isMobile" class="tree-mobile-header">
+                <span>Ordner</span>
+                <Button icon="pi pi-times" text size="small" @click="showTreePanel = false" />
+              </div>
               <Tree
                 :value="treeNodes"
                 v-model:selectionKeys="selectedTreeKey"
@@ -394,13 +436,22 @@ async function doReboot() {
                 selectionMode="single"
                 class="explorer-tree"
                 @node-expand="onTreeExpand"
-                @node-select="onTreeSelect"
+                @node-select="(n: any) => { onTreeSelect(n); if (isMobile) showTreePanel = false }"
               />
             </div>
             <div class="file-browser">
             <!-- Explorer-Toolbar -->
             <div class="explorer-toolbar">
               <div class="explorer-nav">
+                <Button
+                  v-if="isMobile"
+                  icon="pi pi-folder"
+                  text
+                  rounded
+                  size="small"
+                  @click="showTreePanel = !showTreePanel"
+                  v-tooltip.bottom="'Ordner'"
+                />
                 <Button
                   icon="pi pi-arrow-left"
                   text
@@ -476,12 +527,12 @@ async function doReboot() {
                     {{ data.type === 'file' ? data.size : '' }}
                   </template>
                 </Column>
-                <Column field="permissions" header="Rechte" sortable style="width: 120px">
+                <Column v-if="!isMobile" field="permissions" header="Rechte" sortable style="width: 120px">
                   <template #body="{ data }">
                     <span class="permissions-cell">{{ data.permissions }}</span>
                   </template>
                 </Column>
-                <Column field="modified" header="Geändert" sortable style="width: 160px" />
+                <Column v-if="!isMobile" field="modified" header="Geändert" sortable style="width: 160px" />
                 <Column header="" style="width: 50px; text-align: center">
                   <template #body="{ data }">
                     <Button
@@ -903,5 +954,52 @@ async function doReboot() {
 
 .upload-btn {
   align-self: flex-end;
+}
+
+/* Mobile-Anpassungen */
+.browser-row-mobile {
+  grid-template-columns: 1fr;
+  height: auto;
+  max-height: 60vh;
+}
+
+.tree-panel-mobile {
+  position: absolute;
+  top: 0;
+  left: 0;
+  right: 0;
+  bottom: 0;
+  z-index: 10;
+  background: var(--p-surface-card);
+  border-right: none;
+  border: 1px solid var(--p-surface-border);
+  border-radius: var(--p-border-radius);
+  padding: 0;
+}
+
+.tree-mobile-header {
+  display: flex;
+  justify-content: space-between;
+  align-items: center;
+  padding: 0.5rem 0.75rem;
+  border-bottom: 1px solid var(--p-surface-border);
+  font-weight: 600;
+  font-size: 0.875rem;
+}
+
+@media (max-width: 767px) {
+  .status-grid {
+    grid-template-columns: repeat(auto-fill, minmax(140px, 1fr));
+  }
+
+  .browser-row {
+    position: relative;
+    height: auto;
+    max-height: 60vh;
+  }
+
+  .drop-zone {
+    padding: 1.25rem;
+  }
 }
 </style>

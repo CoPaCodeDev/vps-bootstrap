@@ -4,7 +4,9 @@ import { useApi } from '@/composables/useApi'
 import RouteTable from '@/components/routes/RouteTable.vue'
 import RouteAddDialog from '@/components/routes/RouteAddDialog.vue'
 import Button from 'primevue/button'
+import { useMobile } from '@/composables/useMobile'
 
+const { isMobile } = useMobile()
 const { get, loading } = useApi()
 const routes = ref<any[]>([])
 const showAddDialog = ref(false)
@@ -21,8 +23,8 @@ async function fetchRoutes() {
     <div class="page-header">
       <h1>Routen</h1>
       <div class="actions">
-        <Button label="Aktualisieren" icon="pi pi-refresh" text @click="fetchRoutes" :loading="loading" />
-        <Button label="Route hinzufügen" icon="pi pi-plus" @click="showAddDialog = true" />
+        <Button :label="isMobile ? undefined : 'Aktualisieren'" icon="pi pi-refresh" text @click="fetchRoutes" :loading="loading" />
+        <Button :label="isMobile ? undefined : 'Route hinzufügen'" icon="pi pi-plus" @click="showAddDialog = true" />
       </div>
     </div>
 

@@ -3,6 +3,14 @@ import { useRouter, useRoute } from 'vue-router'
 import { useTasksStore } from '@/stores/tasks'
 import { computed } from 'vue'
 
+defineProps<{
+  mobile?: boolean
+}>()
+
+const emit = defineEmits<{
+  navigate: []
+}>()
+
 const router = useRouter()
 const route = useRoute()
 const tasksStore = useTasksStore()
@@ -27,11 +35,12 @@ function isActive(path: string) {
 
 function navigate(to: string) {
   router.push(to)
+  emit('navigate')
 }
 </script>
 
 <template>
-  <aside class="sidebar">
+  <aside class="sidebar" :class="{ 'sidebar-mobile': mobile }">
     <div class="sidebar-header">
       <i class="pi pi-server"></i>
       <span class="sidebar-title">VPS Dashboard</span>
@@ -69,6 +78,13 @@ function navigate(to: string) {
   left: 0;
   top: 0;
   z-index: 100;
+}
+
+.sidebar-mobile {
+  position: static;
+  width: 100%;
+  height: 100%;
+  border-right: none;
 }
 
 .sidebar-header {
@@ -113,6 +129,7 @@ function navigate(to: string) {
   transition: all 0.15s;
   width: 100%;
   text-align: left;
+  min-height: 44px;
 }
 
 .nav-item:hover {

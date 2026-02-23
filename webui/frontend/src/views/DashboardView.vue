@@ -5,6 +5,9 @@ import VpsStatusCard from '@/components/vps/VpsStatusCard.vue'
 import Button from 'primevue/button'
 import { useApi } from '@/composables/useApi'
 import { useToast } from 'primevue/usetoast'
+import { useMobile } from '@/composables/useMobile'
+
+const { isMobile } = useMobile()
 
 const vpsStore = useVpsStore()
 const { post } = useApi()
@@ -43,14 +46,14 @@ const unmanagedHosts = computed(() => vpsStore.hosts.filter((h) => h.managed ===
       <h1>VPS-Übersicht</h1>
       <div class="actions">
         <Button
-          label="Aktualisieren"
+          :label="isMobile ? undefined : 'Aktualisieren'"
           icon="pi pi-refresh"
           text
           @click="refresh"
           :loading="vpsStore.loading"
         />
         <Button
-          label="Netzwerk scannen"
+          :label="isMobile ? undefined : 'Netzwerk scannen'"
           icon="pi pi-search"
           severity="secondary"
           @click="startScan"
