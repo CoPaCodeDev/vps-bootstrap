@@ -7,8 +7,6 @@ services:
     restart: unless-stopped
     ipc: host
     environment:
-      ANTHROPIC_API_KEY: "{{ANTHROPIC_API_KEY}}"
-      GITHUB_TOKEN: "{{GITHUB_TOKEN}}"
       GIT_USER: "{{GIT_USER}}"
       GIT_EMAIL: "{{GIT_EMAIL}}"
       DISABLE_AUTOUPDATER: "1"

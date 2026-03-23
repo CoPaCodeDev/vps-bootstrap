@@ -10,11 +10,6 @@ if [ -n "$GIT_EMAIL" ]; then
 fi
 git config --global --add safe.directory '*'
 
-# GitHub CLI authentifizieren
-if [ -n "$GITHUB_TOKEN" ]; then
-    echo "$GITHUB_TOKEN" | gh auth login --with-token 2>/dev/null || true
-fi
-
 # Playwright Chromium installieren (falls nicht im Volume)
 if [ ! -d "$PLAYWRIGHT_BROWSERS_PATH/chromium"* ] 2>/dev/null; then
     echo "Installiere Playwright Chromium..."
