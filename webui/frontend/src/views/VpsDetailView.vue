@@ -19,11 +19,15 @@ import { useToast } from 'primevue/usetoast'
 const route = useRoute()
 const host = computed(() => route.params.host as string)
 const vpsStore = useVpsStore()
-const { post, get, upload } = useApi()
+const { post, get, del, upload } = useApi()
 const toast = useToast()
 const task = useTaskStream()
 
 const status = computed(() => vpsStore.statuses[host.value])
+const deployments = ref<{ app: string; host: string; status: string; containers: number }[]>([])
+const deploymentsLoading = ref(false)
+const showRemoveConfirm = ref(false)
+const removeTarget = ref('')
 const showRebootConfirm = ref(false)
 const showTaskOutput = ref(false)
 const terminalCount = ref(1)
@@ -232,9 +236,37 @@ function toggleUpload() {
 
 let refreshInterval: ReturnType<typeof setInterval> | null = null
 
+async function fetchDeployments() {
+  deploymentsLoading.value = true
+  try {
+    deployments.value = await get<typeof deployments.value>(`/deploy/${host.value}`)
+  } catch {
+    deployments.value = []
+  } finally {
+    deploymentsLoading.value = false
+  }
+}
+
+function confirmRemove(app: string) {
+  removeTarget.value = app
+  showRemoveConfirm.value = true
+}
+
+async function doRemove() {
+  showRemoveConfirm.value = false
+  try {
+    await del(`/deploy/${host.value}/${removeTarget.value}`)
+    toast.add({ severity: 'success', summary: 'Entfernt', detail: `${removeTarget.value} wurde entfernt`, life: 3000 })
+    await fetchDeployments()
+  } catch {
+    toast.add({ severity: 'error', summary: 'Fehler', detail: 'Deployment konnte nicht entfernt werden', life: 3000 })
+  }
+}
+
 onMounted(async () => {
   await vpsStore.fetchHosts()
   await vpsStore.fetchStatus(host.value)
+  await fetchDeployments()
   refreshInterval = setInterval(() => vpsStore.fetchStatus(host.value), 10000)
 })
 
@@ -355,6 +387,40 @@ async function doReboot() {
         </template>
       </Card>
     </div>
+
+    <!-- Deployments -->
+    <Card v-if="deployments.length > 0" class="section">
+      <template #title>
+        <div class="card-header-with-close">
+          <span>Deployments</span>
+          <Button icon="pi pi-refresh" text rounded size="small" @click="fetchDeployments" :loading="deploymentsLoading" />
+        </div>
+      </template>
+      <template #content>
+        <DataTable :value="deployments" size="small" stripedRows>
+          <Column field="app" header="App" />
+          <Column field="status" header="Status">
+            <template #body="{ data }">
+              <span :class="['deploy-status', data.status]">{{ data.status }}</span>
+            </template>
+          </Column>
+          <Column field="containers" header="Container" />
+          <Column header="" style="width: 80px; text-align: center">
+            <template #body="{ data }">
+              <Button
+                icon="pi pi-trash"
+                text
+                rounded
+                size="small"
+                severity="danger"
+                @click="confirmRemove(data.app)"
+                v-tooltip.bottom="'Deployment entfernen'"
+              />
+            </template>
+          </Column>
+        </DataTable>
+      </template>
+    </Card>
 
     <!-- Interaktives Terminal -->
     <Card class="section">
@@ -576,6 +642,17 @@ async function doReboot() {
       </template>
     </Card>
 
+    <!-- Deployment entfernen -->
+    <ConfirmDialog
+      :visible="showRemoveConfirm"
+      header="Deployment entfernen"
+      :message="`${removeTarget} auf ${host} wirklich entfernen? Container und Daten werden gelöscht.`"
+      confirm-label="Entfernen"
+      severity="danger"
+      @confirm="doRemove"
+      @cancel="showRemoveConfirm = false"
+    />
+
     <!-- Reboot-Bestätigung -->
     <ConfirmDialog
       :visible="showRebootConfirm"
@@ -643,6 +720,20 @@ async function doReboot() {
 
 .section {
   margin-bottom: 1.5rem;
+}
+
+.deploy-status {
+  font-size: 0.8rem;
+  font-weight: 600;
+  text-transform: uppercase;
+}
+
+.deploy-status.running {
+  color: var(--p-green-500);
+}
+
+.deploy-status.stopped {
+  color: var(--p-red-500);
 }
 
 .terminal-grid {
