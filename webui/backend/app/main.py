@@ -2,7 +2,7 @@ from fastapi import FastAPI
 from fastapi.middleware.cors import CORSMiddleware
 
 from .config import settings
-from .routers import vps, docker, traefik, routes, deploy, netcup, backup, authelia, tasks, terminal
+from .routers import vps, docker, traefik, routes, deploy, netcup, backup, authelia, tasks, terminal, system
 
 app = FastAPI(
     title="VPS Dashboard API",
@@ -32,6 +32,7 @@ app.include_router(backup.router, prefix=settings.api_prefix)
 app.include_router(authelia.router, prefix=settings.api_prefix)
 app.include_router(tasks.router, prefix=settings.api_prefix)
 app.include_router(terminal.router, prefix=settings.api_prefix)
+app.include_router(system.router, prefix=settings.api_prefix)
 
 
 @app.get("/api/health")

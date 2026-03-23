@@ -1,24 +1,52 @@
 <script setup lang="ts">
 import { ref, onMounted } from 'vue'
 import { useApi } from '@/composables/useApi'
+import { useToast } from 'primevue/usetoast'
 import TemplateCard from '@/components/deploy/TemplateCard.vue'
 import Button from 'primevue/button'
+import Toast from 'primevue/toast'
 
-const { get, loading } = useApi()
+const { get, post, loading } = useApi()
+const toast = useToast()
 const templates = ref<any[]>([])
+const updating = ref(false)
 
 onMounted(() => fetchTemplates())
 
 async function fetchTemplates() {
   templates.value = await get<any[]>('/deploy/templates')
 }
+
+async function updateTemplates() {
+  updating.value = true
+  try {
+    const result = await post<{ updated: boolean; output: string; new_templates: string[] }>('/system/update')
+    if (result.updated) {
+      const msg = result.new_templates.length > 0
+        ? `Neue Templates: ${result.new_templates.join(', ')}`
+        : 'Templates aktualisiert'
+      toast.add({ severity: 'success', summary: 'Update erfolgreich', detail: msg, life: 5000 })
+      await fetchTemplates()
+    } else {
+      toast.add({ severity: 'info', summary: 'Bereits aktuell', detail: 'Keine neuen Updates verfuegbar.', life: 3000 })
+    }
+  } catch (e: any) {
+    toast.add({ severity: 'error', summary: 'Update fehlgeschlagen', detail: e.detail || 'Unbekannter Fehler', life: 5000 })
+  } finally {
+    updating.value = false
+  }
+}
 </script>
 
 <template>
   <div>
+    <Toast />
     <div class="page-header">
       <h1>Deployments</h1>
-      <Button label="Aktualisieren" icon="pi pi-refresh" text @click="fetchTemplates" :loading="loading" />
+      <div class="header-actions">
+        <Button label="Templates aktualisieren" icon="pi pi-download" severity="secondary" text @click="updateTemplates" :loading="updating" />
+        <Button label="Aktualisieren" icon="pi pi-refresh" text @click="fetchTemplates" :loading="loading" />
+      </div>
     </div>
 
     <div v-if="loading && templates.length === 0" class="loading">
@@ -52,6 +80,11 @@ async function fetchTemplates() {
 .page-header h1 {
   font-size: 1.5rem;
   font-weight: 700;
+}
+
+.header-actions {
+  display: flex;
+  gap: 0.5rem;
 }
 
 .template-grid {
