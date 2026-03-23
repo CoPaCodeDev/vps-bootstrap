@@ -44,8 +44,8 @@ async function updateTemplates() {
     <div class="page-header">
       <h1>Deployments</h1>
       <div class="header-actions">
-        <Button label="Templates aktualisieren" icon="pi pi-download" severity="secondary" text @click="updateTemplates" :loading="updating" />
-        <Button label="Aktualisieren" icon="pi pi-refresh" text @click="fetchTemplates" :loading="loading" />
+        <Button label="Templates aktualisieren" icon="pi pi-download" severity="secondary" outlined @click="updateTemplates" :loading="updating" />
+        <Button icon="pi pi-refresh" text rounded @click="fetchTemplates" :loading="loading" />
       </div>
     </div>
 
