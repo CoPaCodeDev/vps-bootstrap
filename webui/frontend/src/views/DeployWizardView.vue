@@ -28,7 +28,7 @@ const task = useTaskStream()
 const template = ref<any>(null)
 const selectedHost = ref('')
 const vars = ref<Record<string, string>>({})
-const authEnabled = ref(false)
+const authEnabled = ref(true)
 
 onMounted(async () => {
   await vpsStore.fetchHosts()
@@ -110,7 +110,7 @@ async function deploy() {
       <Card class="section">
         <template #title>3. Optionen</template>
         <template #content>
-          <div class="option-row" v-if="template.has_authelia">
+          <div class="option-row">
             <label>Authelia-Schutz aktivieren</label>
             <InputSwitch v-model="authEnabled" />
           </div>
