@@ -17,7 +17,7 @@ services:
     volumes:
       - /home/master/.ssh:/home/master/.ssh:ro
       - /etc/vps-hosts:/etc/vps-hosts
-      - /opt/vps:/opt/vps:ro
+      - /opt/vps:/opt/vps
       - /opt/traefik:/opt/traefik
       - /opt/authelia:/opt/authelia
       - /home/master/.config/vps-cli:/home/master/.config/vps-cli

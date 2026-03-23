@@ -8,6 +8,7 @@ RUN groupadd -g 1000 master && useradd -u 1000 -g 1000 -d /home/master -s /bin/b
 # SSH-Client für Verbindungen zu VPS
 RUN apt-get update && apt-get install -y --no-install-recommends \
     openssh-client \
+    git \
     && rm -rf /var/lib/apt/lists/*
 
 COPY requirements.txt .
