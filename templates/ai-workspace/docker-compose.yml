@@ -1,35 +1,33 @@
 services:
-  code-server:
+  claude-service:
     build:
       context: .
-      dockerfile: Dockerfile.code-server
-    container_name: ai-workspace-code
+      dockerfile: Dockerfile.claude-service
+    container_name: ai-workspace-claude
     restart: unless-stopped
+    ipc: host
     environment:
       ANTHROPIC_API_KEY: "{{ANTHROPIC_API_KEY}}"
+      GITHUB_TOKEN: "{{GITHUB_TOKEN}}"
       GIT_USER: "{{GIT_USER}}"
       GIT_EMAIL: "{{GIT_EMAIL}}"
-      SUDO_PASSWORD: "{{SUDO_PASSWORD}}"
+      DISABLE_AUTOUPDATER: "1"
+      PLAYWRIGHT_BROWSERS_PATH: /home/claude/.cache/ms-playwright
+      PROJECTS_DIR: /home/claude/projects
+      VIDEOS_DIR: /shared/videos
     volumes:
-      - projects:/home/coder/projects
-      - claude-config:/home/coder/.claude
-      - videos:/shared/videos
+      - projects:/home/claude/projects
+      - claude-config:/home/claude/.claude
+      - npm-cache:/home/claude/.npm
+      - pw-browsers:/home/claude/.cache/ms-playwright
+      - shared-videos:/shared/videos
     ports:
-      - "8443:8443"
+      - "8000:8000"
     healthcheck:
-      test: ["CMD-SHELL", "curl -f http://localhost:8443/healthz || exit 1"]
+      test: ["CMD-SHELL", "curl -f http://localhost:8000/api/health || exit 1"]
       interval: 10s
       timeout: 5s
       retries: 5
-
-  playwright:
-    image: mcr.microsoft.com/playwright:v1.52.0-noble
-    container_name: ai-workspace-playwright
-    restart: unless-stopped
-    entrypoint: ["tail", "-f", "/dev/null"]
-    volumes:
-      - videos:/shared/videos
-      - projects:/home/coder/projects:ro
 
   dashboard:
     build:
@@ -38,11 +36,14 @@ services:
     container_name: ai-workspace-dashboard
     restart: unless-stopped
     volumes:
-      - projects:/home/coder/projects:ro
+      - projects:/projects:ro
+      - shared-videos:/shared/videos:ro
     ports:
       - "8080:80"
 
 volumes:
   projects:
   claude-config:
-  videos:
+  npm-cache:
+  pw-browsers:
+  shared-videos:

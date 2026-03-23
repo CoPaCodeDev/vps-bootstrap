@@ -8,23 +8,18 @@ fi
 if [ -n "$GIT_EMAIL" ]; then
     git config --global user.email "$GIT_EMAIL"
 fi
+git config --global --add safe.directory '*'
 
-# Sudo-Passwort setzen
-if [ -n "$SUDO_PASSWORD" ]; then
-    echo "coder:$SUDO_PASSWORD" | sudo chpasswd
+# GitHub CLI authentifizieren
+if [ -n "$GITHUB_TOKEN" ]; then
+    echo "$GITHUB_TOKEN" | gh auth login --with-token 2>/dev/null || true
 fi
 
-# Claude Code Konfiguration (API Key)
-if [ -n "$ANTHROPIC_API_KEY" ]; then
-    mkdir -p /home/coder/.claude
-    cat > /home/coder/.claude/.env <<EOF
-ANTHROPIC_API_KEY=$ANTHROPIC_API_KEY
-EOF
+# Playwright Chromium installieren (falls nicht im Volume)
+if [ ! -d "$PLAYWRIGHT_BROWSERS_PATH/chromium"* ] 2>/dev/null; then
+    echo "Installiere Playwright Chromium..."
+    npx playwright install chromium
 fi
 
-# code-server starten
-exec code-server \
-    --bind-addr 0.0.0.0:8443 \
-    --auth none \
-    --disable-telemetry \
-    /home/coder/projects
+# API Wrapper starten
+exec uvicorn main:app --host 0.0.0.0 --port 8000 --app-dir /opt/api-wrapper
