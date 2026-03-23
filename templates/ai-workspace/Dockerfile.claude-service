@@ -46,8 +46,8 @@ RUN npm install -g @anthropic-ai/claude-code
 RUN npm install -g @playwright/test \
     && PLAYWRIGHT_BROWSERS_PATH=/opt/pw-browsers npx playwright install chromium
 
-# User claude erstellen
-RUN groupadd -g 1000 claude && useradd -u 1000 -g 1000 -m -d /home/claude -s /bin/bash claude
+# User claude erstellen (GID 1000 existiert bereits als 'node')
+RUN useradd -u 1000 -g 1000 -m -d /home/claude -s /bin/bash claude
 
 # Arbeitsverzeichnisse
 RUN mkdir -p /home/claude/projects /home/claude/.claude /home/claude/.npm \
