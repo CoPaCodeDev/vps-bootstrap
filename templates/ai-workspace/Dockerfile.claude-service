@@ -46,17 +46,14 @@ RUN npm install -g @anthropic-ai/claude-code
 RUN npm install -g @playwright/test \
     && PLAYWRIGHT_BROWSERS_PATH=/opt/pw-browsers npx playwright install chromium
 
-# User claude erstellen (GID 1000 existiert bereits als 'node')
-RUN useradd -u 1000 -g 1000 -m -d /home/claude -s /bin/bash claude
+# Arbeitsverzeichnisse (node User hat UID/GID 1000)
+RUN mkdir -p /home/node/projects /home/node/.claude /home/node/.npm \
+    /home/node/.cache/ms-playwright /shared/videos \
+    && chown -R node:node /home/node /shared/videos
 
-# Arbeitsverzeichnisse
-RUN mkdir -p /home/claude/projects /home/claude/.claude /home/claude/.npm \
-    /home/claude/.cache/ms-playwright /shared/videos \
-    && chown -R claude:claude /home/claude /shared/videos
-
-# Playwright-Browser ins persistente Verzeichnis linken
-RUN cp -r /opt/pw-browsers/* /home/claude/.cache/ms-playwright/ \
-    && chown -R claude:claude /home/claude/.cache/ms-playwright
+# Playwright-Browser ins persistente Verzeichnis kopieren
+RUN cp -r /opt/pw-browsers/* /home/node/.cache/ms-playwright/ \
+    && chown -R node:node /home/node/.cache/ms-playwright
 
 # API Wrapper
 COPY api-wrapper/requirements.txt /opt/api-wrapper/requirements.txt
@@ -66,11 +63,11 @@ COPY api-wrapper/ /opt/api-wrapper/
 COPY entrypoint.sh /usr/local/bin/entrypoint.sh
 RUN chmod +x /usr/local/bin/entrypoint.sh
 
-USER claude
-WORKDIR /home/claude
+USER node
+WORKDIR /home/node
 
 ENV DISABLE_AUTOUPDATER=1
-ENV PLAYWRIGHT_BROWSERS_PATH=/home/claude/.cache/ms-playwright
+ENV PLAYWRIGHT_BROWSERS_PATH=/home/node/.cache/ms-playwright
 
 EXPOSE 8000
 

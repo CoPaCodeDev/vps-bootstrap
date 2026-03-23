@@ -10,14 +10,14 @@ services:
       GIT_USER: "{{GIT_USER}}"
       GIT_EMAIL: "{{GIT_EMAIL}}"
       DISABLE_AUTOUPDATER: "1"
-      PLAYWRIGHT_BROWSERS_PATH: /home/claude/.cache/ms-playwright
-      PROJECTS_DIR: /home/claude/projects
+      PLAYWRIGHT_BROWSERS_PATH: /home/node/.cache/ms-playwright
+      PROJECTS_DIR: /home/node/projects
       VIDEOS_DIR: /shared/videos
     volumes:
-      - projects:/home/claude/projects
-      - claude-config:/home/claude/.claude
-      - npm-cache:/home/claude/.npm
-      - pw-browsers:/home/claude/.cache/ms-playwright
+      - projects:/home/node/projects
+      - claude-config:/home/node/.claude
+      - npm-cache:/home/node/.npm
+      - pw-browsers:/home/node/.cache/ms-playwright
       - shared-videos:/shared/videos
     ports:
       - "8000:8000"

@@ -8,7 +8,7 @@ from models import SessionStatus
 
 logger = logging.getLogger(__name__)
 
-PROJECTS_DIR = Path(os.environ.get("PROJECTS_DIR", "/home/claude/projects"))
+PROJECTS_DIR = Path(os.environ.get("PROJECTS_DIR", "/home/node/projects"))
 VIDEOS_DIR = Path(os.environ.get("VIDEOS_DIR", "/shared/videos"))
 
 
