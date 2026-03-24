@@ -1,4 +1,12 @@
 services:
+  n8n-init:
+    image: alpine:latest
+    container_name: n8n-init
+    restart: "no"
+    command: ["sh", "-c", "chown -R 1000:1000 /data"]
+    volumes:
+      - ./data:/data
+
   postgres:
     image: postgres:16
     container_name: n8n-db
@@ -20,6 +28,8 @@ services:
     container_name: n8n
     restart: unless-stopped
     depends_on:
+      n8n-init:
+        condition: service_completed_successfully
       postgres:
         condition: service_healthy
     environment:
@@ -32,6 +42,7 @@ services:
       N8N_ENCRYPTION_KEY: "{{N8N_ENCRYPTION_KEY}}"
       N8N_HOST: "{{DOMAIN}}"
       N8N_PROTOCOL: https
+      N8N_SECURE_COOKIE: "true"
       WEBHOOK_URL: "https://{{DOMAIN}}/"
     volumes:
       - ./data:/home/node/.n8n
