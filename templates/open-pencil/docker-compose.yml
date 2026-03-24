@@ -9,7 +9,7 @@ services:
       - |
         set -e
         if [ ! -f /app/package.json ]; then
-          apt-get update && apt-get install -y --no-install-recommends ca-certificates
+          apt-get update && apt-get install -y --no-install-recommends ca-certificates curl
           curl -sL https://github.com/open-pencil/open-pencil/archive/refs/heads/master.tar.gz | tar xz --strip-components=1 -C /app
           cd /app && bun install --frozen-lockfile
         fi
