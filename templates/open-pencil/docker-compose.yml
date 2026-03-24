@@ -1,0 +1,70 @@
+services:
+  init:
+    image: oven/bun:1
+    volumes:
+      - source:/app
+      - dist:/dist
+    entrypoint: ["/bin/sh", "-c"]
+    command:
+      - |
+        set -e
+        if [ ! -f /app/package.json ]; then
+          echo "==> Installiere Abhaengigkeiten..."
+          apt-get update && apt-get install -y --no-install-recommends ca-certificates curl
+          echo "==> Lade Quellcode herunter..."
+          curl -sL https://github.com/open-pencil/open-pencil/archive/refs/heads/master.tar.gz | tar xz --strip-components=1 -C /app
+        fi
+        cd /app
+        echo "==> Installiere Pakete..."
+        bun install
+        echo "==> Baue Frontend..."
+        bunx vite build
+        if [ ! -d /app/dist ] || [ -z "$(ls -A /app/dist)" ]; then
+          echo "FEHLER: Build hat kein Output erzeugt"
+          exit 1
+        fi
+        rm -rf /dist/*
+        cp -r /app/dist/* /dist/
+        echo "==> Build erfolgreich, $(ls /dist | wc -l) Dateien kopiert"
+
+  app:
+    image: nginx:alpine
+    container_name: open-pencil-app
+    restart: unless-stopped
+    depends_on:
+      init:
+        condition: service_completed_successfully
+    volumes:
+      - dist:/usr/share/nginx/html:ro
+      - ./nginx.conf:/etc/nginx/conf.d/default.conf:ro
+    ports:
+      - "3000:80"
+    healthcheck:
+      test: ["CMD-SHELL", "wget -qO- http://localhost:80/ || exit 1"]
+      interval: 15s
+      timeout: 5s
+      retries: 3
+
+  mcp:
+    image: oven/bun:1-slim
+    container_name: open-pencil-mcp
+    restart: unless-stopped
+    depends_on:
+      init:
+        condition: service_completed_successfully
+    working_dir: /app
+    command: ["bun", "run", "packages/mcp/src/index.ts"]
+    volumes:
+      - source:/app:ro
+    environment:
+      HOST: "0.0.0.0"
+      PORT: "7600"
+      WS_PORT: "7601"
+      OPENPENCIL_MCP_AUTH_TOKEN: "{{MCP_AUTH_TOKEN}}"
+    ports:
+      - "127.0.0.1:{{MCP_PORT}}:7600"
+      - "127.0.0.1:{{MCP_WS_PORT}}:7601"
+
+volumes:
+  source:
+  dist:
