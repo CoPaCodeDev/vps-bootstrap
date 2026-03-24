@@ -3,6 +3,7 @@ services:
     build:
       context: .
       dockerfile: Dockerfile
+      target: app
     container_name: open-pencil-app
     restart: unless-stopped
     volumes:
@@ -18,7 +19,8 @@ services:
   mcp:
     build:
       context: .
-      dockerfile: Dockerfile.mcp
+      dockerfile: Dockerfile
+      target: mcp
     container_name: open-pencil-mcp
     restart: unless-stopped
     environment:

@@ -1,25 +1,33 @@
-FROM oven/bun:1 AS build
+FROM oven/bun:1 AS source
+
+RUN apt-get update && apt-get install -y git && rm -rf /var/lib/apt/lists/*
 
 WORKDIR /app
-
-# Package-Manifeste zuerst fuer besseres Layer-Caching
-COPY package.json bun.lock ./
-COPY packages/core/package.json packages/core/package.json
-COPY packages/cli/package.json packages/cli/package.json
-COPY packages/mcp/package.json packages/mcp/package.json
-COPY packages/acp/package.json packages/acp/package.json
-COPY packages/docs/package.json packages/docs/package.json
-
+RUN git clone --depth 1 https://github.com/open-pencil/open-pencil.git .
 RUN bun install --frozen-lockfile
 
-# Source-Code kopieren und bauen
-COPY . .
+# --- App Build (Web-UI) ---
+FROM source AS app-build
 RUN bunx vite build
 
-# --- Produktions-Image ---
-FROM nginx:alpine
-
-COPY --from=build /app/dist /usr/share/nginx/html
+FROM nginx:alpine AS app
+COPY --from=app-build /app/dist /usr/share/nginx/html
 COPY nginx.conf /etc/nginx/conf.d/default.conf
-
 EXPOSE 80
+
+# --- MCP Build ---
+FROM source AS mcp-build
+RUN cd packages/mcp && bun run build
+
+FROM oven/bun:1-slim AS mcp
+WORKDIR /app
+COPY --from=mcp-build /app/packages/mcp/dist ./dist
+COPY --from=mcp-build /app/packages/mcp/package.json ./package.json
+COPY --from=mcp-build /app/packages/core ./packages/core
+COPY --from=mcp-build /app/node_modules ./node_modules
+
+ENV HOST=0.0.0.0
+ENV PORT=7600
+ENV WS_PORT=7601
+EXPOSE 7600 7601
+CMD ["bun", "run", "dist/index.js"]
