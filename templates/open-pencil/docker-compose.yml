@@ -9,13 +9,23 @@ services:
       - |
         set -e
         if [ ! -f /app/package.json ]; then
+          echo "==> Installiere Abhaengigkeiten..."
           apt-get update && apt-get install -y --no-install-recommends ca-certificates curl
+          echo "==> Lade Quellcode herunter..."
           curl -sL https://github.com/open-pencil/open-pencil/archive/refs/heads/master.tar.gz | tar xz --strip-components=1 -C /app
-          cd /app && bun install --frozen-lockfile
         fi
-        cd /app && bunx vite build
+        cd /app
+        echo "==> Installiere Pakete..."
+        bun install
+        echo "==> Baue Frontend..."
+        bunx vite build
+        if [ ! -d /app/dist ] || [ -z "$(ls -A /app/dist)" ]; then
+          echo "FEHLER: Build hat kein Output erzeugt"
+          exit 1
+        fi
         rm -rf /dist/*
         cp -r /app/dist/* /dist/
+        echo "==> Build erfolgreich, $(ls /dist | wc -l) Dateien kopiert"
 
   app:
     image: nginx:alpine
