@@ -1,0 +1,38 @@
+services:
+  app:
+    build:
+      context: .
+      dockerfile: Dockerfile
+    container_name: open-pencil-app
+    restart: unless-stopped
+    volumes:
+      - {{DEPLOY_DIR}}/data:/data
+    ports:
+      - "3000:80"
+    healthcheck:
+      test: ["CMD-SHELL", "wget -qO- http://localhost:80/ || exit 1"]
+      interval: 15s
+      timeout: 5s
+      retries: 3
+
+  mcp:
+    build:
+      context: .
+      dockerfile: Dockerfile.mcp
+    container_name: open-pencil-mcp
+    restart: unless-stopped
+    environment:
+      HOST: "0.0.0.0"
+      PORT: "7600"
+      WS_PORT: "7601"
+      OPENPENCIL_MCP_AUTH_TOKEN: "{{MCP_AUTH_TOKEN}}"
+    volumes:
+      - {{DEPLOY_DIR}}/data:/data
+    ports:
+      - "127.0.0.1:{{MCP_PORT}}:7600"
+      - "127.0.0.1:{{MCP_WS_PORT}}:7601"
+    healthcheck:
+      test: ["CMD-SHELL", "wget -qO- http://localhost:7600/health || exit 1"]
+      interval: 15s
+      timeout: 5s
+      retries: 3
